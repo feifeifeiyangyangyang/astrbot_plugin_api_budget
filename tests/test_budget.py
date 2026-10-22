@@ -256,26 +256,28 @@ class ComputeReportTest(unittest.TestCase):
             pricing=pricing,
             tz=CN,
             peak_config=peak,
-            group_budget=1.5,
-            private_budget=1.5,
+            group_budget=0.0,
+            private_budget=0.0,
             websearch_price_per_1000=500.0,
             date_label="2026-10-22",
+            total_budget=1.5,
         )
         group = report.group("scope:group")
         private = report.group("scope:private")
         self.assertIsNotNone(group)
         self.assertIsNotNone(private)
         assert group is not None and private is not None
-        # group: ¥1 token + ¥1 search = ¥2 > ¥1.5 ; private: ¥1 < ¥1.5
+        # group: ¥1 token + ¥1 search = ¥2 ; private: ¥1 ; total ¥3 > ¥1.5
         self.assertAlmostEqual(group.spent, 2.0, places=6)
         self.assertAlmostEqual(private.spent, 1.0, places=6)
-        self.assertTrue(group.over_budget)
-        self.assertFalse(private.over_budget)
-        self.assertEqual(report.blockers("scope:group"), [group])
-        self.assertEqual(report.blockers("scope:private"), [])
+        self.assertTrue(report.total_cap_over)
+        blockers = report.blockers("scope:private")
+        self.assertEqual(len(blockers), 1)
+        self.assertEqual(blockers[0].label, "今日总花费")
         text = budget.format_today(report)
-        self.assertIn("群聊总额度", text)
-        self.assertIn("私聊总额度", text)
+        self.assertIn("总计：¥3.00 / ¥1.50", text)
+        self.assertIn("群聊：¥2.00", text)
+        self.assertIn("私聊：¥1.00", text)
 
     def test_unknown_provider_is_still_reported(self):
         pricing = budget.normalize_pricing(budget.DEFAULT_PRICING_JSON)

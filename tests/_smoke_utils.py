@@ -120,8 +120,7 @@ def create_usage_db(
 def plugin_config(db_path: Path, **overrides) -> dict:
     config = {
         "enabled": True,
-        "group_daily_budget": 2.0,
-        "private_daily_budget": 2.0,
+        "daily_budget": 2.0,
         "db_path": str(db_path),
         "timezone": "Asia/Shanghai",
         "enforce_chat": True,
