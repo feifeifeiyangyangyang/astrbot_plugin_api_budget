@@ -5,7 +5,8 @@
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 给 AstrBot 加一个「每日 API 花费上限」：按 API Key 统计每天花了多少人民币，
-到上限自动停止回答，并支持在 QQ 里用 `/额度` 随时查询。
+**默认把聊天和联网搜索合并成一个每日额度**，到上限自动停止回答，
+并支持在 QQ 里用 `/额度` 随时查询。
 
 > 适合把机器人放在群里、又担心群友聊太嗨把 API 余额烧光的场景。
 
@@ -15,15 +16,18 @@
 
 - 💰 **按 API Key 统计每天花费**：读取 AstrBot 自己记录的 token 用量，区分
   「缓存命中 / 缓存未命中 / 输出」，按峰谷价算出人民币金额。
-- 🚦 **每日预算拦截**：每个 Key 默认 2 元/天（可改），达到上限后不再调用模型，
-  在群里回复提示（文案可自定义）。
-- 🔎 **联网搜索也管**：统计搜索工具调用次数，超过搜索 Key 的预算后，
-  自动从本轮请求里移除搜索工具（默认 DeepSeek 搜索 2026-11-01 前免费，价格可配）。
+- 🚦 **每日预算拦截**：默认 **聊天 + 联网搜索共用 2 元/天**（可改），达到上限后
+  不再调用模型，在群里回复提示（文案可自定义）。
+- 🔀 **额度模式可切换**：
+  - `shared`（默认）：聊天 Key 和联网搜索 Key 共用一个每日预算；
+  - `per_key`：每个 API Key 分别计算每日预算。
+- 🔎 **联网搜索也管**：统计搜索工具调用次数，额度用完时自动从本轮请求里移除
+  搜索工具（默认 DeepSeek 搜索 2026-11-01 前免费，价格可配）。
 - 📊 **聊天内查询**（仅管理员）：
-  - `/额度`：今天各 Key 花了多少、还剩多少、token 明细
+  - `/额度`：今天聊天 + 搜索的总花费、各 Key 明细、剩余额度
   - `/额度明细`：按模型拆分，高峰/空闲花费分别显示
   - `/额度历史 7`：最近 N 天每日花费（1–30 天）
-- ⚙️ **WebUI 配置**：价格表、预算、重置时间、高峰时段等都能在 AstrBot 面板里改。
+- ⚙️ **WebUI 配置**：价格表、预算、额度模式、重置时间、高峰时段等都能在面板里改。
 - 🔒 **本地只读**：只读取本机 AstrBot 的 SQLite 用量表，不上传任何数据；
   密钥在输出中只显示前后几位（如 `sk-***d42d`）。
 
@@ -33,11 +37,12 @@
 /额度
 💰 今日 API 花费 · 2026-10-22
 
-总计：¥0.23
+总计：¥0.23 / ¥2.00
+（聊天 + 联网搜索共用，剩余 ¥1.77）
 
-🔑 DeepSeek 聊天 Key（sk-***d42d）：¥0.23 / ¥2.00
+🔑 DeepSeek 聊天 Key（sk-***d42d）：¥0.23
    输入 962.7k（缓存 853.4k） · 输出 13.3k · 调用 27 次
-🔎 联网搜索（DeepSeek，sk-***3456）：¥0.00 / ¥2.00
+🔎 联网搜索（DeepSeek，sk-***3456）：¥0.00
    搜索调用：0 次
 
 ⏰ 每天 00:00 重置额度（本地时区）
@@ -110,6 +115,10 @@ E:\AsrBot\instances\<实例ID>\core\data\plugins\astrbot_plugin_api_budget\
 
 > QQ 官方机器人只能被动回复，指令需要 @机器人 或按平台要求触发。
 
+> 指令前缀跟随 AstrBot 的「唤醒词（wake_prefix）」。默认是 `/`；如果你把它改成了
+> `ffyy`，就要发 `ffyy额度`（或 `ffyy 额度`）。@ 机器人唤醒时不会自动去掉 `/`，
+> 所以 @ 之后直接发 `额度`，不要发 `/额度`。
+
 ---
 
 ## 配置
@@ -117,10 +126,11 @@ E:\AsrBot\instances\<实例ID>\core\data\plugins\astrbot_plugin_api_budget\
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `enabled` | `true` | 总开关 |
-| `daily_budget` | `2.0` | 每个 Key 每日预算（人民币元），`0` = 只统计不拦截 |
-| `budget_overrides` | `{}` | 给特定 Key 单独设预算的 JSON，见下 |
-| `enforce_chat` | `true` | 聊天 Key 超限时拦截 |
-| `enforce_websearch` | `true` | 联网搜索 Key 超限时移除搜索工具 |
+| `daily_budget` | `2.0` | 每日预算（人民币元），`0` = 只统计不拦截 |
+| `budget_mode` | `shared` | `shared` = 聊天 + 联网搜索共用预算；`per_key` = 每个 Key 独立预算 |
+| `budget_overrides` | `{}` | 仅 `per_key` 模式：给特定 Key 单独设预算的 JSON，见下 |
+| `enforce_chat` | `true` | 预算用完时拦截 LLM 回答 |
+| `enforce_websearch` | `true` | 搜索额度用完时移除搜索工具（`shared` 模式下聊天会先被拦截） |
 | `block_message` | 见默认 | 超限提示，可用 `{key}`、`{budget}`、`{spent}`、`{remaining}` 等占位符 |
 | `pricing_json` | DeepSeek 默认价 | 价格表 JSON，可加任意模型 |
 | `peak_windows` | `["09:00-12:00","14:00-18:00"]` | 高峰时段 |
@@ -134,7 +144,14 @@ E:\AsrBot\instances\<实例ID>\core\data\plugins\astrbot_plugin_api_budget\
 | `timezone` | `Asia/Shanghai` | 时区 |
 | `db_path` | 空 | 数据库路径，留空自动查找 `data/data_v4.db` |
 
-### 单独设置某个 Key 的预算
+### 两种额度模式
+
+- **`shared`（默认）**：聊天 Key 和联网搜索 Key 共用一个 `daily_budget`。
+  例如聊天花了 ¥1.5、搜索花了 ¥0.5，合计达到 ¥2 就停止回答。
+- **`per_key`**：每个 Key 各自使用自己的预算，聊天和搜索互不影响；
+  可用 `budget_overrides` 给某个 Key 单独设预算。
+
+### 单独设置某个 Key 的预算（仅 `per_key` 模式）
 
 `budget_overrides` 填 JSON。键可以是 provider source id，也可以是 `websearch:<provider>`：
 

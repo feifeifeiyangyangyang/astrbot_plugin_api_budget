@@ -204,6 +204,35 @@ class ComputeReportTest(unittest.TestCase):
         self.assertEqual(search_group.usage.count, 3)
         self.assertEqual(len(report.blockers()), 1)
 
+    def test_shared_budget_combines_chat_and_websearch(self):
+        chat_map, websearch = budget.build_key_map(_sample_config())
+        pricing = budget.normalize_pricing(budget.DEFAULT_PRICING_JSON)
+        peak = budget.parse_peak_config(["09:00-12:00"], [1, 2, 3, 4, 5], [])
+        off_ts = datetime(2026, 10, 22, 20, 0, tzinfo=CN).timestamp()
+        rows = [_row(cached=0, other=1_000_000, output=0, end_ts=off_ts)]
+        report = budget.compute_report(
+            rows,
+            chat_map,
+            websearch,
+            2,
+            pricing=pricing,
+            tz=CN,
+            peak_config=peak,
+            default_budget=2.0,
+            overrides={},
+            websearch_price_per_1000=500.0,
+            date_label="2026-10-22",
+            budget_mode="shared",
+        )
+        # 1M off-peak input = ¥1.00, two searches = ¥1.00, total exactly ¥2.00.
+        self.assertTrue(report.shared)
+        self.assertAlmostEqual(report.shared_spent, 2.0, places=6)
+        self.assertTrue(report.shared_over)
+        self.assertTrue(report.websearch_over_budget())
+        self.assertTrue(report.blockers())
+        text = budget.format_today(report)
+        self.assertIn("共用", text)
+
     def test_unknown_provider_is_still_reported(self):
         pricing = budget.normalize_pricing(budget.DEFAULT_PRICING_JSON)
         report = budget.compute_report(

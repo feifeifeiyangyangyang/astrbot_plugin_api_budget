@@ -6,16 +6,26 @@
     "hint": "关闭后不再拦截请求，也不再统计搜索调用。"
   },
   "daily_budget": {
-    "description": "每个 API Key 每日预算（人民币元）",
+    "description": "每日总预算（人民币元）",
     "type": "float",
     "default": 2.0,
-    "hint": "0 表示不限制、只统计。可用下方「单独预算」覆盖某个 Key。"
+    "hint": "shared 模式下为「聊天 + 联网搜索」合计预算；per_key 模式下为每个 Key 的预算。0 表示不限制、只统计。"
+  },
+  "budget_mode": {
+    "description": "额度模式",
+    "type": "string",
+    "default": "shared",
+    "options": [
+      "shared",
+      "per_key"
+    ],
+    "hint": "shared：聊天和联网搜索共用一个每日预算；per_key：每个 API Key 分别计算预算。"
   },
   "budget_overrides": {
     "description": "单独设置某个 Key 的预算（JSON）",
     "type": "text",
     "default": "{}",
-    "hint": "键可以用 provider source id；联网搜索用 websearch:<provider>。例如 {\"deepseek\": 5, \"websearch:deepseek\": 1}"
+    "hint": "仅 per_key 模式生效。键可以用 provider source id；联网搜索用 websearch:<provider>。例如 {\"deepseek\": 5, \"websearch:deepseek\": 1}"
   },
   "enforce_chat": {
     "description": "聊天 Key 超预算时拦截回答",

@@ -537,6 +537,13 @@ class Report:
     available: bool = True
     error: str = ""
     websearch_count: int = 0
+    budget_mode: str = "per_key"
+    shared_budget: float = 0.0
+    shared_spent: float = 0.0
+
+    @property
+    def shared(self) -> bool:
+        return self.budget_mode == "shared"
 
     @property
     def total_spent(self) -> float:
@@ -544,6 +551,8 @@ class Report:
 
     @property
     def total_budget(self) -> float:
+        if self.shared:
+            return self.shared_budget
         return sum(group.budget for group in self.groups if group.budget > 0)
 
     @property
@@ -553,10 +562,25 @@ class Report:
         return self.total_budget - self.total_spent
 
     @property
+    def shared_over(self) -> bool:
+        return self.shared and self.shared_budget > 0 and self.shared_spent >= self.shared_budget
+
+    @property
     def has_unknown_price(self) -> bool:
         return any(group.usage.unknown_price for group in self.groups)
 
+    def is_over_budget(self) -> bool:
+        if self.shared:
+            return self.shared_over
+        return any(group.over_budget for group in self.groups)
+
     def blockers(self, key_id: str | None = None) -> list[GroupReport]:
+        if self.shared:
+            if not self.shared_over:
+                return []
+            # A shared budget covers every chat key, so any chat request is
+            # blocked once the combined spend reaches the limit.
+            return [group for group in self.groups if group.kind == "chat"]
         result = []
         for group in self.groups:
             if group.kind != "chat" or not group.over_budget:
@@ -565,6 +589,12 @@ class Report:
                 continue
             result.append(group)
         return result
+
+    def websearch_over_budget(self) -> bool:
+        if self.shared:
+            return self.shared_over
+        group = self.websearch_group()
+        return bool(group and group.over_budget)
 
     def websearch_group(self) -> GroupReport | None:
         for group in self.groups:
@@ -595,8 +625,14 @@ def compute_report(
     overrides: dict[str, float],
     websearch_price_per_1000: float,
     date_label: str,
+    budget_mode: str = "per_key",
 ) -> Report:
-    report = Report(date_label=date_label, websearch_count=websearch_count)
+    shared = budget_mode == "shared"
+    report = Report(
+        date_label=date_label,
+        websearch_count=websearch_count,
+        budget_mode="shared" if shared else "per_key",
+    )
     groups: dict[str, GroupReport] = {}
 
     def get_group(ref: KeyRef) -> GroupReport:
@@ -606,7 +642,7 @@ def compute_report(
                 key_id=ref.key_id,
                 label=ref.label,
                 kind=ref.kind,
-                budget=resolve_budget(ref, default_budget, overrides),
+                budget=0.0 if shared else resolve_budget(ref, default_budget, overrides),
             )
             groups[ref.key_id] = group
         return group
@@ -650,6 +686,9 @@ def compute_report(
         group.usage.add(usage)
 
     report.groups = sorted(groups.values(), key=lambda item: (item.kind != "chat", item.label))
+    if shared:
+        report.shared_spent = sum(group.spent for group in groups.values())
+        report.shared_budget = max(default_budget, 0.0)
     return report
 
 
@@ -674,14 +713,16 @@ def fmt_tokens(value: int) -> str:
     return str(value)
 
 
-def _group_header(group: GroupReport) -> str:
+def _group_header(group: GroupReport, shared: bool = False) -> str:
     icon = "🔑" if group.kind == "chat" else "🔎"
-    if group.budget > 0:
+    if shared:
+        budget_text = fmt_money(group.spent)
+    elif group.budget > 0:
         budget_text = f"{fmt_money(group.spent)} / {fmt_money(group.budget)}"
     else:
         budget_text = f"{fmt_money(group.spent)}（未设预算）"
     line = f"{icon} {group.label}：{budget_text}"
-    if group.over_budget:
+    if not shared and group.over_budget:
         line += " ⚠️ 已超限"
     return line
 
@@ -694,13 +735,24 @@ def format_today(report: Report, reset_hour: int = 0) -> str:
             "请确认 AstrBot 版本 >= 4.23 且使用本地 Agent。"
         )
     lines = [f"💰 今日 API 花费 · {report.date_label}", ""]
-    lines.append(f"总计：{fmt_money(report.total_spent)}")
+    if report.shared:
+        if report.shared_budget > 0:
+            lines.append(
+                f"总计：{fmt_money(report.total_spent)} / {fmt_money(report.shared_budget)}"
+            )
+            lines.append(
+                f"（聊天 + 联网搜索共用，剩余 {fmt_money(max(report.total_remaining, 0.0))}）"
+            )
+        else:
+            lines.append(f"总计：{fmt_money(report.total_spent)}（共用额度，未设预算）")
+    else:
+        lines.append(f"总计：{fmt_money(report.total_spent)}")
     lines.append("")
 
     if not report.groups:
         lines.append("今天还没有产生 API 调用。")
     for group in report.groups:
-        lines.append(_group_header(group))
+        lines.append(_group_header(group, report.shared))
         if group.kind == "websearch":
             lines.append(f"   搜索调用：{group.usage.count} 次")
         else:
@@ -719,7 +771,7 @@ def format_today(report: Report, reset_hour: int = 0) -> str:
     if report.has_unknown_price:
         lines.append("提示：在插件配置的「价格表」中补充模型价格会更准确。")
     lines.append(f"⏰ 每天 {reset_hour:02d}:00 重置额度（本地时区）")
-    if any(group.over_budget for group in report.groups):
+    if report.is_over_budget():
         lines.append("⚠️ 已达每日额度，机器人会暂停回答，明天自动恢复。")
     return "\n".join(lines)
 
@@ -728,12 +780,14 @@ def format_detail(report: Report) -> str:
     if not report.available:
         return f"📊 明细暂不可用：{report.error}"
     lines = [f"📊 今日 API 明细 · {report.date_label}"]
+    if report.shared:
+        lines.append("（聊天 + 联网搜索共用额度）")
     if not report.groups:
         lines.append("今天还没有产生 API 调用。")
         return "\n".join(lines)
     for group in report.groups:
         lines.append("")
-        lines.append(_group_header(group))
+        lines.append(_group_header(group, report.shared))
         if group.kind == "websearch":
             lines.append(f"   搜索调用：{group.usage.count} 次")
             continue

@@ -56,6 +56,7 @@ async def test_websearch_block(main_module) -> None:
         db_path,
         daily_budget=2.0,
         websearch_price_per_1000=5000.0,
+        budget_mode="per_key",
     )
     _start, _end, day_key = plugin._day_start()
     await plugin._increment_websearch("deepseek", day_key)
@@ -81,6 +82,25 @@ async def test_websearch_block(main_module) -> None:
     print("WEBSEARCH BLOCK OK")
 
 
+async def test_shared_budget_blocks_chat_when_search_exceeds(main_module) -> None:
+    db_path = create_usage_db({FAKE_PROVIDER_ID: (1, 0, 1)})
+    plugin = make_plugin(
+        main_module,
+        db_path,
+        daily_budget=2.0,
+        websearch_price_per_1000=5000.0,
+    )
+    _start, _end, day_key = plugin._day_start()
+    await plugin._increment_websearch("deepseek", day_key)
+    event = FakeEvent()
+    request = FakeRequest()
+    await plugin.guard_llm_request(event, request)
+    print("shared block sent:", event.sent, "stopped:", event.stopped)
+    assert event.stopped, "shared budget should block chat when search alone exhausts it"
+    assert event.sent
+    print("SHARED BUDGET BLOCK OK")
+
+
 async def test_no_block_when_affordable(main_module) -> None:
     db_path = create_usage_db(EXPENSIVE_TOKENS)
     plugin = make_plugin(main_module, db_path, daily_budget=100.0)
@@ -98,6 +118,7 @@ async def run() -> None:
     main_module, _budget_module = load_plugin_modules()
     await test_chat_block(main_module)
     await test_websearch_block(main_module)
+    await test_shared_budget_blocks_chat_when_search_exceeds(main_module)
     await test_no_block_when_affordable(main_module)
     print("GUARD INTEGRATION OK")
 

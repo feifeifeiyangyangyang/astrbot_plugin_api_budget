@@ -20,6 +20,7 @@ try:  # relative import when loaded as a package by AstrBot
         DEFAULT_PRICING_JSON,
         DEFAULT_TIMEZONE,
         DEFAULT_WEBSEARCH_TOOLS,
+        DayCost,
         Report,
         UsageDataUnavailable,
         aggregate_by_day,
@@ -44,6 +45,7 @@ except ImportError:  # direct import, e.g. unit tests
         DEFAULT_PRICING_JSON,
         DEFAULT_TIMEZONE,
         DEFAULT_WEBSEARCH_TOOLS,
+        DayCost,
         Report,
         UsageDataUnavailable,
         aggregate_by_day,
@@ -270,13 +272,16 @@ class ApiBudgetPlugin(Star):
             self._setting("holidays", []),
         )
 
-    def _budget_settings(self) -> tuple[float, dict[str, float]]:
+    def _budget_settings(self) -> tuple[float, dict[str, float], str]:
         try:
             default_budget = float(self._setting("daily_budget", 2.0))
         except (TypeError, ValueError):
             default_budget = 2.0
         overrides = parse_budget_overrides(self._setting("budget_overrides", "{}"))
-        return default_budget, overrides
+        budget_mode = str(self._setting("budget_mode", "shared") or "shared").strip().lower()
+        if budget_mode not in {"shared", "per_key"}:
+            budget_mode = "shared"
+        return default_budget, overrides, budget_mode
 
     async def _build_report(self) -> Report:
         tz = self._timezone()
@@ -298,7 +303,7 @@ class ApiBudgetPlugin(Star):
         chat_map, websearch_ref = build_key_map(main_config, self._websearch_provider() or None)
         provider = self._websearch_provider()
         websearch_count = self._websearch_count(day_key, provider) if websearch_ref else 0
-        default_budget, overrides = self._budget_settings()
+        default_budget, overrides, budget_mode = self._budget_settings()
         try:
             websearch_price = float(self._setting("websearch_price_per_1000", 0.0))
         except (TypeError, ValueError):
@@ -315,6 +320,7 @@ class ApiBudgetPlugin(Star):
             overrides=overrides,
             websearch_price_per_1000=websearch_price,
             date_label=date_label,
+            budget_mode=budget_mode,
         )
 
     async def _build_history(self, days: int):
@@ -326,13 +332,32 @@ class ApiBudgetPlugin(Star):
         if db_path is None:
             raise UsageDataUnavailable("找不到 AstrBot 用量数据库。")
         rows = await asyncio.to_thread(query_usage, db_path, query_start, query_end)
+        today = today_start.astimezone(tz).date()
         day_costs = aggregate_by_day(
             rows,
             pricing=self._pricing(),
             tz=tz,
             peak_config=self._peak_config(),
         )
-        return day_costs, today_start.astimezone(tz).date()
+        # Include counted web-search calls in the daily totals.
+        provider = self._websearch_provider()
+        try:
+            search_price = float(self._setting("websearch_price_per_1000", 0.0))
+        except (TypeError, ValueError):
+            search_price = 0.0
+        if provider and search_price > 0:
+            counters = self._state.get("websearch", {})
+            for offset in range(days):
+                day = today - timedelta(days=offset)
+                count = 0
+                if isinstance(counters, dict):
+                    day_counter = counters.get(day.isoformat(), {})
+                    if isinstance(day_counter, dict):
+                        count = int(day_counter.get(provider, 0) or 0)
+                if count:
+                    bucket = day_costs.setdefault(day, DayCost(day=day))
+                    bucket.cost += count * search_price / 1000.0
+        return day_costs, today
 
     # ------------------------------------------------------------------
     # budget enforcement
@@ -366,15 +391,26 @@ class ApiBudgetPlugin(Star):
             str(self._setting("block_message", DEFAULT_BLOCK_MESSAGE) or "").strip()
             or DEFAULT_BLOCK_MESSAGE
         )
-        values = {
-            "key": group.label,
-            "budget": fmt_money(group.budget),
-            "spent": fmt_money(group.spent),
-            "remaining": fmt_money(max(group.remaining, 0.0)),
-            "date": report.date_label,
-            "total_spent": fmt_money(report.total_spent),
-            "total_budget": fmt_money(report.total_budget),
-        }
+        if report.shared:
+            values = {
+                "key": "聊天 + 联网搜索共用额度",
+                "budget": fmt_money(report.shared_budget),
+                "spent": fmt_money(report.shared_spent),
+                "remaining": fmt_money(max(report.shared_budget - report.shared_spent, 0.0)),
+                "date": report.date_label,
+                "total_spent": fmt_money(report.total_spent),
+                "total_budget": fmt_money(report.shared_budget),
+            }
+        else:
+            values = {
+                "key": group.label,
+                "budget": fmt_money(group.budget),
+                "spent": fmt_money(group.spent),
+                "remaining": fmt_money(max(group.remaining, 0.0)),
+                "date": report.date_label,
+                "total_spent": fmt_money(report.total_spent),
+                "total_budget": fmt_money(report.total_budget),
+            }
         try:
             return template.format_map(_SafeFormatDict(values))
         except Exception:
@@ -423,7 +459,7 @@ class ApiBudgetPlugin(Star):
                 return
             if enforce_chat:
                 provider_key = await self._current_provider_key(event)
-                if provider_key is None:
+                if provider_key is None and not report.shared:
                     # Unmapped provider: only block when there is a single key,
                     # so an unknown provider cannot accidentally block another
                     # key's sessions.
@@ -441,8 +477,7 @@ class ApiBudgetPlugin(Star):
                     event.stop_event()
                     return
             if enforce_websearch:
-                websearch_group = report.websearch_group()
-                if websearch_group is not None and websearch_group.over_budget:
+                if report.websearch_over_budget():
                     removed = self._disable_websearch_tools(req)
                     if removed and bool(self._setting("websearch_notice", True)):
                         if await self._allow_notice(f"websearch:{event.unified_msg_origin}", 3600):
