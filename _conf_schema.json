@@ -6,21 +6,10 @@
     "hint": "关闭后不再拦截请求，也不再统计搜索调用。"
   },
   "daily_budget": {
-    "description": "每日额度（all / real_key 模式使用，元）",
+    "description": "总每日额度（可选，元）",
     "type": "float",
-    "default": 1.0,
-    "hint": "session_type 模式请用下面的「群聊每日额度」「私聊每日额度」；0 表示不限量、只统计。"
-  },
-  "budget_scope": {
-    "description": "额度分桶方式",
-    "type": "string",
-    "default": "session_type",
-    "options": [
-      "session_type",
-      "all",
-      "real_key"
-    ],
-    "hint": "session_type：群聊共用一个额度、私聊共用一个额度（推荐）；all：所有聊天 + 搜索共用一个额度；real_key：按真实 API Key 分别计算。"
+    "default": 0.0,
+    "hint": "群聊 + 私聊合计不能超过这个值；0 表示不限制总上限，只按下面的「群聊每日额度」「私聊每日额度」分别限制。"
   },
   "group_daily_budget": {
     "description": "群聊每日额度（元）",
@@ -33,12 +22,6 @@
     "type": "float",
     "default": 1.0,
     "hint": "所有私聊合计的每日额度；0 表示不限量。"
-  },
-  "budget_overrides": {
-    "description": "单独设置某个 Key 的预算（JSON）",
-    "type": "text",
-    "default": "{}",
-    "hint": "仅 real_key 模式生效。键可以用 provider source id；联网搜索用 websearch:<provider>。例如 {\"deepseek\": 5, \"websearch:deepseek\": 1}"
   },
   "unlimited_user_ids": {
     "description": "不限量的用户 ID 列表",

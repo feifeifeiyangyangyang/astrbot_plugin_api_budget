@@ -120,8 +120,7 @@ def create_usage_db(
 def plugin_config(db_path: Path, **overrides) -> dict:
     config = {
         "enabled": True,
-        "budget_scope": "session_type",
-        "daily_budget": 2.0,
+        "daily_budget": 0.0,
         "group_daily_budget": 2.0,
         "private_daily_budget": 2.0,
         "db_path": str(db_path),

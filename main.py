@@ -24,8 +24,6 @@ try:  # relative import when loaded as a package by AstrBot
         Report,
         UsageDataUnavailable,
         aggregate_by_day,
-        build_key_map,
-        compute_report,
         compute_session_report,
         find_usage_database,
         fmt_money,
@@ -34,7 +32,6 @@ try:  # relative import when loaded as a package by AstrBot
         format_today,
         local_day_range,
         normalize_pricing,
-        parse_budget_overrides,
         parse_peak_config,
         query_usage,
         resolve_timezone,
@@ -50,8 +47,6 @@ except ImportError:  # direct import, e.g. unit tests
         Report,
         UsageDataUnavailable,
         aggregate_by_day,
-        build_key_map,
-        compute_report,
         compute_session_report,
         find_usage_database,
         fmt_money,
@@ -60,7 +55,6 @@ except ImportError:  # direct import, e.g. unit tests
         format_today,
         local_day_range,
         normalize_pricing,
-        parse_budget_overrides,
         parse_peak_config,
         query_usage,
         resolve_timezone,
@@ -312,24 +306,25 @@ class ApiBudgetPlugin(Star):
             self._setting("holidays", []),
         )
 
-    def _budget_settings(self) -> tuple[str, float, float, float, dict[str, float]]:
+    def _budget_settings(self) -> tuple[float, float, float]:
+        """Return (total_cap, group_budget, private_budget) in CNY.
+
+        ``0`` means unlimited for each value.  The total cap is optional and
+        applies to group + private combined.
+        """
         try:
-            default_budget = float(self._setting("daily_budget", 1.0))
+            total_cap = float(self._setting("daily_budget", 0.0))
         except (TypeError, ValueError):
-            default_budget = 1.0
+            total_cap = 0.0
         try:
-            group_budget = float(self._setting("group_daily_budget", default_budget))
+            group_budget = float(self._setting("group_daily_budget", 1.0))
         except (TypeError, ValueError):
-            group_budget = default_budget
+            group_budget = 1.0
         try:
-            private_budget = float(self._setting("private_daily_budget", default_budget))
+            private_budget = float(self._setting("private_daily_budget", 1.0))
         except (TypeError, ValueError):
-            private_budget = default_budget
-        scope = str(self._setting("budget_scope", "session_type") or "session_type").strip().lower()
-        if scope not in {"session_type", "all", "real_key"}:
-            scope = "session_type"
-        overrides = parse_budget_overrides(self._setting("budget_overrides", "{}"))
-        return scope, default_budget, group_budget, private_budget, overrides
+            private_budget = 1.0
+        return total_cap, group_budget, private_budget
 
     async def _build_report(self) -> Report:
         tz = self._timezone()
@@ -348,47 +343,24 @@ class ApiBudgetPlugin(Star):
             return Report(date_label=date_label, available=False, error=str(exc))
 
         provider = self._websearch_provider()
-        scope_setting, daily_budget, group_budget, private_budget, overrides = (
-            self._budget_settings()
-        )
+        total_cap, group_budget, private_budget = self._budget_settings()
         try:
             websearch_price = float(self._setting("websearch_price_per_1000", 0.0))
         except (TypeError, ValueError):
             websearch_price = 0.0
 
-        if scope_setting == "session_type":
-            search_counts = self._websearch_scope_counts(day_key, provider) if provider else {}
-            return compute_session_report(
-                rows,
-                search_counts,
-                pricing=self._pricing(),
-                tz=tz,
-                peak_config=self._peak_config(),
-                group_budget=group_budget,
-                private_budget=private_budget,
-                websearch_price_per_1000=websearch_price,
-                date_label=date_label,
-            )
-
-        main_config = self._main_config()
-        chat_map, websearch_ref = build_key_map(main_config, provider or None)
-        websearch_count = (
-            sum(self._websearch_scope_counts(day_key, provider).values()) if provider else 0
-        )
-        budget_mode = "shared" if scope_setting == "all" else "per_key"
-        return compute_report(
+        search_counts = self._websearch_scope_counts(day_key, provider) if provider else {}
+        return compute_session_report(
             rows,
-            chat_map,
-            websearch_ref,
-            websearch_count,
+            search_counts,
             pricing=self._pricing(),
             tz=tz,
             peak_config=self._peak_config(),
-            default_budget=daily_budget,
-            overrides=overrides,
+            group_budget=group_budget,
+            private_budget=private_budget,
             websearch_price_per_1000=websearch_price,
             date_label=date_label,
-            budget_mode=budget_mode,
+            total_budget=total_cap,
         )
 
     async def _build_history(self, days: int):
@@ -426,54 +398,20 @@ class ApiBudgetPlugin(Star):
     # budget enforcement
     # ------------------------------------------------------------------
 
-    async def _current_provider_key(self, event: AstrMessageEvent) -> str | None:
-        provider_id = ""
-        try:
-            provider = await self.context.get_using_provider_async(umo=event.unified_msg_origin)
-        except Exception:
-            provider = None
-        if provider is not None:
-            try:
-                provider_config = getattr(provider, "provider_config", {}) or {}
-                provider_id = str(provider_config.get("id") or "")
-            except Exception:
-                provider_id = ""
-            if not provider_id:
-                try:
-                    provider_id = str(provider.meta().id)
-                except Exception:
-                    provider_id = ""
-        if not provider_id:
-            return None
-        chat_map, _ = build_key_map(self._main_config())
-        ref = chat_map.get(provider_id)
-        return ref.key_id if ref else None
-
     def _render_block_message(self, report: Report, group) -> str:
         template = (
             str(self._setting("block_message", DEFAULT_BLOCK_MESSAGE) or "").strip()
             or DEFAULT_BLOCK_MESSAGE
         )
-        if report.shared:
-            values = {
-                "key": "聊天 + 联网搜索共用额度",
-                "budget": fmt_money(report.shared_budget),
-                "spent": fmt_money(report.shared_spent),
-                "remaining": fmt_money(max(report.shared_budget - report.shared_spent, 0.0)),
-                "date": report.date_label,
-                "total_spent": fmt_money(report.total_spent),
-                "total_budget": fmt_money(report.shared_budget),
-            }
-        else:
-            values = {
-                "key": group.label,
-                "budget": fmt_money(group.budget),
-                "spent": fmt_money(group.spent),
-                "remaining": fmt_money(max(group.remaining, 0.0)),
-                "date": report.date_label,
-                "total_spent": fmt_money(report.total_spent),
-                "total_budget": fmt_money(report.total_budget),
-            }
+        values = {
+            "key": group.label,
+            "budget": fmt_money(group.budget),
+            "spent": fmt_money(group.spent),
+            "remaining": fmt_money(max(group.remaining, 0.0)),
+            "date": report.date_label,
+            "total_spent": fmt_money(report.total_spent),
+            "total_budget": fmt_money(report.total_budget),
+        }
         try:
             return template.format_map(_SafeFormatDict(values))
         except Exception:
@@ -522,51 +460,22 @@ class ApiBudgetPlugin(Star):
             report = await self._build_report()
             if not report.available:
                 return
-            if report.scope_mode:
-                scope = "private" if event.is_private_chat() else "group"
-                scope_key = f"scope:{scope}"
-                if enforce_chat:
-                    bucket = report.group(scope_key)
-                    if bucket is not None and bucket.over_budget:
-                        text = self._render_block_message(report, bucket)
-                        await event.send(event.plain_result(text))
-                        event.stop_event()
-                        return
-                if enforce_websearch and report.websearch_over_budget(scope_key):
-                    removed = self._disable_websearch_tools(req)
-                    if removed and bool(self._setting("websearch_notice", True)):
-                        if await self._allow_notice(f"websearch:{event.unified_msg_origin}", 3600):
-                            await event.send(
-                                event.plain_result("🔎 联网搜索额度已用完，本轮已自动关闭搜索。")
-                            )
-                return
+            scope = "private" if event.is_private_chat() else "group"
+            scope_key = f"scope:{scope}"
             if enforce_chat:
-                provider_key = await self._current_provider_key(event)
-                if provider_key is None and not report.shared:
-                    # Unmapped provider: only block when there is a single key,
-                    # so an unknown provider cannot accidentally block another
-                    # key's sessions.
-                    chat_groups = [group for group in report.groups if group.kind == "chat"]
-                    blockers = (
-                        [group for group in chat_groups if group.over_budget]
-                        if len(chat_groups) == 1
-                        else []
-                    )
-                else:
-                    blockers = report.blockers(provider_key)
+                blockers = report.blockers(scope_key)
                 if blockers:
                     text = self._render_block_message(report, blockers[0])
                     await event.send(event.plain_result(text))
                     event.stop_event()
                     return
-            if enforce_websearch:
-                if report.websearch_over_budget():
-                    removed = self._disable_websearch_tools(req)
-                    if removed and bool(self._setting("websearch_notice", True)):
-                        if await self._allow_notice(f"websearch:{event.unified_msg_origin}", 3600):
-                            await event.send(
-                                event.plain_result("🔎 联网搜索额度已用完，本轮已自动关闭搜索。")
-                            )
+            if enforce_websearch and report.websearch_over_budget(scope_key):
+                removed = self._disable_websearch_tools(req)
+                if removed and bool(self._setting("websearch_notice", True)):
+                    if await self._allow_notice(f"websearch:{event.unified_msg_origin}", 3600):
+                        await event.send(
+                            event.plain_result("🔎 联网搜索额度已用完，本轮已自动关闭搜索。")
+                        )
         except Exception:
             self.logger.warning("额度拦截检查失败（已跳过，不影响正常对话）", exc_info=True)
 

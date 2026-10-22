@@ -40,7 +40,7 @@ async def test_chat_block(main_module) -> None:
     plugin = make_plugin(
         main_module,
         db_path,
-        daily_budget=0.01,
+        daily_budget=0.0,
         group_daily_budget=0.01,
         private_daily_budget=0.01,
     )
@@ -102,27 +102,29 @@ async def test_websearch_block(main_module) -> None:
     plugin = make_plugin(
         main_module,
         db_path,
-        daily_budget=2.0,
+        daily_budget=0.0,
+        group_daily_budget=2.0,
+        private_daily_budget=2.0,
         websearch_price_per_1000=5000.0,
-        budget_scope="real_key",
+        enforce_chat=False,
     )
     _start, _end, day_key = plugin._day_start()
     await plugin._increment_websearch("deepseek", day_key, "group")
     report = await plugin._build_report()
-    search_group = report.websearch_group()
+    group_bucket = report.group("scope:group")
     print(
-        "websearch group spent:",
-        search_group.spent if search_group else None,
+        "group bucket spent:",
+        group_bucket.spent if group_bucket else None,
         "budget:",
-        search_group.budget if search_group else None,
+        group_bucket.budget if group_bucket else None,
     )
-    assert search_group is not None and search_group.over_budget
+    assert group_bucket is not None and group_bucket.over_budget
 
     event = FakeEvent()
     request = FakeRequest()
     await plugin.guard_llm_request(event, request)
     print("search removal sent:", event.sent, "stopped:", event.stopped)
-    assert not event.stopped, "chat should continue when only search is over budget"
+    assert not event.stopped, "chat should continue when enforce_chat is off"
     assert event.sent, "search notice should be sent"
     assert "web_search_deepseek" not in request.func_tool.tools
     assert "deepseek_fetch_web_page" not in request.func_tool.tools
@@ -130,24 +132,23 @@ async def test_websearch_block(main_module) -> None:
     print("WEBSEARCH BLOCK OK")
 
 
-async def test_shared_budget_blocks_chat_when_search_exceeds(main_module) -> None:
-    db_path = create_usage_db({FAKE_PROVIDER_ID: (1, 0, 1)})
+async def test_total_cap_blocks(main_module) -> None:
+    db_path = create_usage_db(EXPENSIVE_TOKENS)
     plugin = make_plugin(
         main_module,
         db_path,
-        budget_scope="all",
-        daily_budget=2.0,
-        websearch_price_per_1000=5000.0,
+        daily_budget=0.01,
+        group_daily_budget=10.0,
+        private_daily_budget=10.0,
     )
-    _start, _end, day_key = plugin._day_start()
-    await plugin._increment_websearch("deepseek", day_key, "group")
     event = FakeEvent()
     request = FakeRequest()
     await plugin.guard_llm_request(event, request)
-    print("shared block sent:", event.sent, "stopped:", event.stopped)
-    assert event.stopped, "shared budget should block chat when search alone exhausts it"
+    print("total cap sent:", event.sent, "stopped:", event.stopped)
+    assert event.stopped, "optional total cap should block chat when exceeded"
     assert event.sent
-    print("SHARED BUDGET BLOCK OK")
+    assert "总每日额度" in str(event.sent[0])
+    print("TOTAL CAP BLOCK OK")
 
 
 async def test_no_block_when_affordable(main_module) -> None:
@@ -174,7 +175,7 @@ async def run() -> None:
     await test_private_and_group_are_separate(main_module)
     await test_unlimited_user_bypasses_budget(main_module)
     await test_websearch_block(main_module)
-    await test_shared_budget_blocks_chat_when_search_exceeds(main_module)
+    await test_total_cap_blocks(main_module)
     await test_no_block_when_affordable(main_module)
     print("GUARD INTEGRATION OK")
 
