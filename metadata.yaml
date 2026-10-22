@@ -6,7 +6,7 @@ desc: >-
   按 API Key 设置每日人民币预算；超限自动拦截并提示，
   管理员可在聊天中发送 /额度、/额度明细、/额度历史 查看花费。
 help: 管理员发送 /额度 查看今日花费；/额度明细 看模型明细；/额度历史 7 查看最近 7 天。
-version: 1.1.0
+version: 1.2.0
 author: API Budget Contributors
 repo: https://github.com/your-name/astrbot_plugin_api_budget
 astrbot_version: ">=4.23,<5"

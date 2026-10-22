@@ -76,6 +76,7 @@ def load_plugin_modules():
 
 def create_usage_db(
     tokens: dict[str, tuple[int, int, int]] | None = None,
+    umo: str = "test:GroupMessage:1",
 ) -> Path:
     """Create a temp provider_stats database.
 
@@ -87,7 +88,7 @@ def create_usage_db(
     connection.execute(
         "CREATE TABLE provider_stats ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id TEXT, "
-        "provider_model TEXT, token_input_other INTEGER, "
+        "provider_model TEXT, umo TEXT, token_input_other INTEGER, "
         "token_input_cached INTEGER, token_output INTEGER, "
         "start_time REAL, end_time REAL, created_at TEXT)"
     )
@@ -96,12 +97,13 @@ def create_usage_db(
     created = now.strftime("%Y-%m-%d %H:%M:%S")
     for provider_id, (input_other, cached, output) in tokens.items():
         connection.execute(
-            "INSERT INTO provider_stats (provider_id, provider_model, "
+            "INSERT INTO provider_stats (provider_id, provider_model, umo, "
             "token_input_other, token_input_cached, token_output, "
-            "start_time, end_time, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            "start_time, end_time, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 provider_id,
                 "deepseek-flash",
+                umo,
                 input_other,
                 cached,
                 output,
@@ -118,7 +120,10 @@ def create_usage_db(
 def plugin_config(db_path: Path, **overrides) -> dict:
     config = {
         "enabled": True,
+        "budget_scope": "session_type",
         "daily_budget": 2.0,
+        "group_daily_budget": 2.0,
+        "private_daily_budget": 2.0,
         "db_path": str(db_path),
         "timezone": "Asia/Shanghai",
         "enforce_chat": True,
@@ -175,11 +180,20 @@ class FakeRequest:
 
 
 class FakeEvent:
-    def __init__(self):
-        self.unified_msg_origin = "test:GroupMessage:1"
+    def __init__(self, private: bool = False, sender_id: str = "10001"):
+        self.private = private
+        self.sender_id = sender_id
+        kind = "FriendMessage" if private else "GroupMessage"
+        self.unified_msg_origin = f"test:{kind}:1"
         self.message_str = "/额度"
         self.sent = []
         self.stopped = False
+
+    def is_private_chat(self):
+        return self.private
+
+    def get_sender_id(self):
+        return self.sender_id
 
     def plain_result(self, text):
         return text

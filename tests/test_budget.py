@@ -27,10 +27,12 @@ def _row(
     output=0,
     end_ts=0.0,
     created="2026-10-22 02:00:00",
+    umo="test:GroupMessage:1",
 ):
     return {
         "provider_id": provider_id,
         "provider_model": provider_model,
+        "umo": umo,
         "token_input_other": other,
         "token_input_cached": cached,
         "token_output": output,
@@ -136,6 +138,13 @@ class DayRangeTest(unittest.TestCase):
         self.assertEqual(start, datetime(2026, 10, 21, 5, 0, tzinfo=CN))
 
 
+class ScopeFromUmoTest(unittest.TestCase):
+    def test_group_and_private(self):
+        self.assertEqual(budget.scope_from_umo("default_1:GroupMessage:abc"), "group")
+        self.assertEqual(budget.scope_from_umo("default_1:FriendMessage:abc"), "private")
+        self.assertEqual(budget.scope_from_umo(""), "group")
+
+
 class KeyMapTest(unittest.TestCase):
     def test_chat_and_websearch_keys(self):
         chat_map, websearch = budget.build_key_map(_sample_config())
@@ -233,6 +242,41 @@ class ComputeReportTest(unittest.TestCase):
         text = budget.format_today(report)
         self.assertIn("共用", text)
 
+    def test_session_type_buckets(self):
+        pricing = budget.normalize_pricing(budget.DEFAULT_PRICING_JSON)
+        peak = budget.parse_peak_config(["09:00-12:00"], [1, 2, 3, 4, 5], [])
+        off_ts = datetime(2026, 10, 22, 20, 0, tzinfo=CN).timestamp()
+        rows = [
+            _row(other=1_000_000, end_ts=off_ts, umo="g:GroupMessage:1"),
+            _row(other=1_000_000, end_ts=off_ts, umo="u:FriendMessage:1"),
+        ]
+        report = budget.compute_session_report(
+            rows,
+            {"group": 2, "private": 0},
+            pricing=pricing,
+            tz=CN,
+            peak_config=peak,
+            group_budget=1.5,
+            private_budget=1.5,
+            websearch_price_per_1000=500.0,
+            date_label="2026-10-22",
+        )
+        group = report.group("scope:group")
+        private = report.group("scope:private")
+        self.assertIsNotNone(group)
+        self.assertIsNotNone(private)
+        assert group is not None and private is not None
+        # group: ¥1 token + ¥1 search = ¥2 > ¥1.5 ; private: ¥1 < ¥1.5
+        self.assertAlmostEqual(group.spent, 2.0, places=6)
+        self.assertAlmostEqual(private.spent, 1.0, places=6)
+        self.assertTrue(group.over_budget)
+        self.assertFalse(private.over_budget)
+        self.assertEqual(report.blockers("scope:group"), [group])
+        self.assertEqual(report.blockers("scope:private"), [])
+        text = budget.format_today(report)
+        self.assertIn("群聊总额度", text)
+        self.assertIn("私聊总额度", text)
+
     def test_unknown_provider_is_still_reported(self):
         pricing = budget.normalize_pricing(budget.DEFAULT_PRICING_JSON)
         report = budget.compute_report(
@@ -259,23 +303,23 @@ class QueryUsageTest(unittest.TestCase):
             connection.execute(
                 "CREATE TABLE provider_stats ("
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id TEXT, "
-                "provider_model TEXT, token_input_other INTEGER, "
+                "provider_model TEXT, umo TEXT, token_input_other INTEGER, "
                 "token_input_cached INTEGER, token_output INTEGER, "
                 "start_time REAL, end_time REAL, created_at TEXT)"
             )
             inside = datetime(2026, 10, 22, 10, 0, tzinfo=CN).timestamp()
             outside = datetime(2026, 10, 21, 10, 0, tzinfo=CN).timestamp()
             connection.execute(
-                "INSERT INTO provider_stats (provider_id, provider_model, "
+                "INSERT INTO provider_stats (provider_id, provider_model, umo, "
                 "token_input_other, token_input_cached, token_output, "
-                "start_time, end_time, created_at) VALUES (?,?,?,?,?,?,?,?)",
-                ("p", "m", 10, 20, 30, inside, inside, "2026-10-22 02:00:00"),
+                "start_time, end_time, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                ("p", "m", "g:GroupMessage:1", 10, 20, 30, inside, inside, "2026-10-22 02:00:00"),
             )
             connection.execute(
-                "INSERT INTO provider_stats (provider_id, provider_model, "
+                "INSERT INTO provider_stats (provider_id, provider_model, umo, "
                 "token_input_other, token_input_cached, token_output, "
-                "start_time, end_time, created_at) VALUES (?,?,?,?,?,?,?,?)",
-                ("p", "m", 1, 2, 3, outside, outside, "2026-10-21 02:00:00"),
+                "start_time, end_time, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                ("p", "m", "g:GroupMessage:1", 1, 2, 3, outside, outside, "2026-10-21 02:00:00"),
             )
             connection.commit()
             connection.close()

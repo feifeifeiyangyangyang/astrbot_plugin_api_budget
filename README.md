@@ -4,30 +4,34 @@
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.23-green.svg)](https://github.com/AstrBotDevs/AstrBot)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-给 AstrBot 加一个「每日 API 花费上限」：按 API Key 统计每天花了多少人民币，
-**默认把聊天和联网搜索合并成一个每日额度**，到上限自动停止回答，
+给 AstrBot 加一个「每日 API 花费上限」：按会话统计每天花了多少人民币，
+**默认把群聊合成一个额度、私聊合成一个额度**，到上限自动停止回答，
 并支持在 QQ 里用 `/额度` 随时查询。
 
 > 适合把机器人放在群里、又担心群友聊太嗨把 API 余额烧光的场景。
+> 只有一个真实 API Key 也没关系——插件按群聊/私聊做“虚拟额度桶”。
 
 ---
 
 ## 功能
 
-- 💰 **按 API Key 统计每天花费**：读取 AstrBot 自己记录的 token 用量，区分
+- 💰 **按会话统计每天花费**：读取 AstrBot 自己记录的 token 用量，区分
   「缓存命中 / 缓存未命中 / 输出」，按峰谷价算出人民币金额。
-- 🚦 **每日预算拦截**：默认 **聊天 + 联网搜索共用 2 元/天**（可改），达到上限后
-  不再调用模型，在群里回复提示（文案可自定义）。
+- 🚦 **群聊 / 私聊分开限额**：默认群聊合计 1 元/天、私聊合计 1 元/天；
+  群聊超额不影响私聊，私聊超额也不影响群聊。
+- 🚫 **按 QQ 号不限量**：可以把指定用户加入 `unlimited_user_ids`，他们不受额度限制
+  （方便给群主、管理员或朋友开白名单）。
 - 🔀 **额度模式可切换**：
-  - `shared`（默认）：聊天 Key 和联网搜索 Key 共用一个每日预算；
-  - `per_key`：每个 API Key 分别计算每日预算。
-- 🔎 **联网搜索也管**：统计搜索工具调用次数，额度用完时自动从本轮请求里移除
-  搜索工具（默认 DeepSeek 搜索 2026-11-01 前免费，价格可配）。
+  - `session_type`（默认）：群聊一个桶、私聊一个桶；
+  - `all`：所有聊天 + 搜索共用一个桶；
+  - `real_key`：按真实 API Key 分别计算（配了多个 Key 时用）。
+- 🔎 **联网搜索也管**：统计搜索工具调用次数，按“群里搜的 / 私聊搜的”计入对应桶，
+  额度用完时自动移除搜索工具（默认 DeepSeek 搜索 2026-11-01 前免费，价格可配）。
 - 📊 **聊天内查询**（仅管理员）：
-  - `/额度`：今天聊天 + 搜索的总花费、各 Key 明细、剩余额度
+  - `/额度`：今天群聊/私聊各自花了多少、还剩多少
   - `/额度明细`：按模型拆分，高峰/空闲花费分别显示
-  - `/额度历史 7`：最近 N 天每日花费（1–30 天）
-- ⚙️ **WebUI 配置**：价格表、预算、额度模式、重置时间、高峰时段等都能在面板里改。
+  - `/额度历史 7`：最近 N 天每日总花费（1–30 天）
+- ⚙️ **WebUI 配置**：额度模式、两个桶的预算、白名单、价格表、重置时间等都能改。
 - 🔒 **本地只读**：只读取本机 AstrBot 的 SQLite 用量表，不上传任何数据；
   密钥在输出中只显示前后几位（如 `sk-***d42d`）。
 
@@ -37,13 +41,12 @@
 /额度
 💰 今日 API 花费 · 2026-10-22
 
-总计：¥0.23 / ¥2.00
-（聊天 + 联网搜索共用，剩余 ¥1.77）
+总计：¥0.29
 
-🔑 DeepSeek 聊天 Key（sk-***d42d）：¥0.23
-   输入 962.7k（缓存 853.4k） · 输出 13.3k · 调用 27 次
-🔎 联网搜索（DeepSeek，sk-***3456）：¥0.00
-   搜索调用：0 次
+👥 群聊总额度：¥0.20 / ¥1.00
+   输入 820.0k（缓存 700.0k） · 输出 9.0k · 调用 18 次 · 搜索 2 次
+💬 私聊总额度：¥0.09 / ¥1.00
+   输入 300.0k（缓存 250.0k） · 输出 5.0k · 调用 9 次
 
 ⏰ 每天 00:00 重置额度（本地时区）
 ```
@@ -57,9 +60,12 @@ AstrBot 4.23+ 的本地 Agent 每完成一次回复，会把本次请求的 toke
 token）。本插件：
 
 1. 每次准备调用 LLM 前，读取「今天」的用量行；
-2. 按 Key 聚合，套用价格表计算人民币花费；
+2. 按会话（群聊 / 私聊）或真实 Key 聚合，套用价格表计算人民币花费；
 3. 达到预算就终止这次请求并回复提示；
 4. `/额度` 等指令也基于同一份数据生成。
+
+`provider_stats` 里的 `umo` 字段记录了这条用量来自哪个群聊/私聊，
+所以插件可以在只有一个真实 API Key 的情况下，把群聊和私聊分开记账、分开拦截。
 
 因为用的是 AstrBot 自己记录的完整用量，即使一次对话里发生了多轮工具调用，
 统计也不会漏。
@@ -126,11 +132,14 @@ E:\AsrBot\instances\<实例ID>\core\data\plugins\astrbot_plugin_api_budget\
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `enabled` | `true` | 总开关 |
-| `daily_budget` | `2.0` | 每日预算（人民币元），`0` = 只统计不拦截 |
-| `budget_mode` | `shared` | `shared` = 聊天 + 联网搜索共用预算；`per_key` = 每个 Key 独立预算 |
-| `budget_overrides` | `{}` | 仅 `per_key` 模式：给特定 Key 单独设预算的 JSON，见下 |
-| `enforce_chat` | `true` | 预算用完时拦截 LLM 回答 |
-| `enforce_websearch` | `true` | 搜索额度用完时移除搜索工具（`shared` 模式下聊天会先被拦截） |
+| `budget_scope` | `session_type` | `session_type` = 群聊/私聊两个桶；`all` = 全部共用一个；`real_key` = 按真实 Key 分 |
+| `group_daily_budget` | `1.0` | 所有群聊合计的每日额度（元），`0` = 不限量 |
+| `private_daily_budget` | `1.0` | 所有私聊合计的每日额度（元），`0` = 不限量 |
+| `daily_budget` | `1.0` | 仅 `all` / `real_key` 模式使用的每日额度（元），`0` = 不限量 |
+| `unlimited_user_ids` | `[]` | 不限量用户 ID 列表，见下 |
+| `budget_overrides` | `{}` | 仅 `real_key` 模式：给特定 Key 单独设预算的 JSON |
+| `enforce_chat` | `true` | 额度用完时拦截 LLM 回答 |
+| `enforce_websearch` | `true` | 搜索额度用完时移除搜索工具 |
 | `block_message` | 见默认 | 超限提示，可用 `{key}`、`{budget}`、`{spent}`、`{remaining}` 等占位符 |
 | `pricing_json` | DeepSeek 默认价 | 价格表 JSON，可加任意模型 |
 | `peak_windows` | `["09:00-12:00","14:00-18:00"]` | 高峰时段 |
@@ -144,16 +153,29 @@ E:\AsrBot\instances\<实例ID>\core\data\plugins\astrbot_plugin_api_budget\
 | `timezone` | `Asia/Shanghai` | 时区 |
 | `db_path` | 空 | 数据库路径，留空自动查找 `data/data_v4.db` |
 
-### 两种额度模式
+### 三种额度模式
 
-- **`shared`（默认）**：聊天 Key 和联网搜索 Key 共用一个 `daily_budget`。
-  例如聊天花了 ¥1.5、搜索花了 ¥0.5，合计达到 ¥2 就停止回答。
-- **`per_key`**：每个 Key 各自使用自己的预算，聊天和搜索互不影响；
-  可用 `budget_overrides` 给某个 Key 单独设预算。
+- **`session_type`（默认）**：群聊合用一个 `group_daily_budget`，私聊合用一个
+  `private_daily_budget`；群聊超额不影响私聊，反之亦然。联网搜索按“群里搜的 /
+  私聊搜的”计入对应桶。
+- **`all`**：所有聊天 + 搜索共用一个 `daily_budget`。适合只想要一个总上限的场景。
+- **`real_key`**：每个真实 API Key 各用自己的预算，可用 `budget_overrides` 单独调整。
+  适合 AstrBot 里配置了多个真实 Key 的场景。
 
-### 单独设置某个 Key 的预算（仅 `per_key` 模式）
+### 按 QQ 号设置不限量
 
-`budget_overrides` 填 JSON。键可以是 provider source id，也可以是 `websearch:<provider>`：
+`unlimited_user_ids` 填用户 ID 列表：
+
+- `aiocqhttp` / NapCat 平台：填 QQ 号；
+- QQ 官方机器人：填 AstrBot 里的用户 ID（在 QQ 里发 `/sid` 获取，类似
+  `88789964EA6FE7F78469266242349F9D` 的字符串）。
+
+列表里的用户不会被额度拦截。注意：**他们的用量仍然计入所在群聊/私聊的总额度**，
+因为 AstrBot 的群聊用量是按整群记录的，无法拆分到具体某个人。
+
+### `real_key` 模式单独调整预算
+
+`budget_overrides` 填 JSON，键可以是 provider source id，也可以是 `websearch:<provider>`：
 
 ```json
 {

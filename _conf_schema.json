@@ -6,35 +6,54 @@
     "hint": "关闭后不再拦截请求，也不再统计搜索调用。"
   },
   "daily_budget": {
-    "description": "每日总预算（人民币元）",
+    "description": "每日额度（all / real_key 模式使用，元）",
     "type": "float",
-    "default": 2.0,
-    "hint": "shared 模式下为「聊天 + 联网搜索」合计预算；per_key 模式下为每个 Key 的预算。0 表示不限制、只统计。"
+    "default": 1.0,
+    "hint": "session_type 模式请用下面的「群聊每日额度」「私聊每日额度」；0 表示不限量、只统计。"
   },
-  "budget_mode": {
-    "description": "额度模式",
+  "budget_scope": {
+    "description": "额度分桶方式",
     "type": "string",
-    "default": "shared",
+    "default": "session_type",
     "options": [
-      "shared",
-      "per_key"
+      "session_type",
+      "all",
+      "real_key"
     ],
-    "hint": "shared：聊天和联网搜索共用一个每日预算；per_key：每个 API Key 分别计算预算。"
+    "hint": "session_type：群聊共用一个额度、私聊共用一个额度（推荐）；all：所有聊天 + 搜索共用一个额度；real_key：按真实 API Key 分别计算。"
+  },
+  "group_daily_budget": {
+    "description": "群聊每日额度（元）",
+    "type": "float",
+    "default": 1.0,
+    "hint": "所有群聊合计的每日额度；0 表示不限量。"
+  },
+  "private_daily_budget": {
+    "description": "私聊每日额度（元）",
+    "type": "float",
+    "default": 1.0,
+    "hint": "所有私聊合计的每日额度；0 表示不限量。"
   },
   "budget_overrides": {
     "description": "单独设置某个 Key 的预算（JSON）",
     "type": "text",
     "default": "{}",
-    "hint": "仅 per_key 模式生效。键可以用 provider source id；联网搜索用 websearch:<provider>。例如 {\"deepseek\": 5, \"websearch:deepseek\": 1}"
+    "hint": "仅 real_key 模式生效。键可以用 provider source id；联网搜索用 websearch:<provider>。例如 {\"deepseek\": 5, \"websearch:deepseek\": 1}"
+  },
+  "unlimited_user_ids": {
+    "description": "不限量的用户 ID 列表",
+    "type": "list",
+    "default": [],
+    "hint": "列表中的用户不受额度限制。aiocqhttp（NapCat）填 QQ 号；QQ 官方机器人填 AstrBot 用户 ID（可用 /sid 查看）。"
   },
   "enforce_chat": {
-    "description": "聊天 Key 超预算时拦截回答",
+    "description": "额度用完时拦截 LLM 回答",
     "type": "bool",
     "default": true,
     "hint": "关闭后只统计、不拦截。"
   },
   "enforce_websearch": {
-    "description": "联网搜索 Key 超预算时关闭搜索工具",
+    "description": "搜索额度用完时移除搜索工具",
     "type": "bool",
     "default": true
   },

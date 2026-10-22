@@ -178,6 +178,14 @@ def _row_local_datetime(row: dict[str, Any], tz: Any) -> datetime:
     return datetime.now(tz)
 
 
+def scope_from_umo(umo: str | None) -> str:
+    """Return "private" or "group" from an AstrBot unified message origin."""
+    text = str(umo or "")
+    if "FriendMessage" in text or ":Friend" in text:
+        return "private"
+    return "group"
+
+
 # ---------------------------------------------------------------------------
 # pricing
 # ---------------------------------------------------------------------------
@@ -288,7 +296,7 @@ def query_usage(db_path: str | Path, start: datetime, end: datetime) -> list[dic
         connection.row_factory = sqlite3.Row
         try:
             cursor = connection.execute(
-                "SELECT provider_id, provider_model, "
+                "SELECT provider_id, provider_model, umo, "
                 "token_input_other, token_input_cached, token_output, "
                 "start_time, end_time, created_at FROM provider_stats "
                 "WHERE (end_time > 0 AND end_time >= ? AND end_time < ?) "
@@ -516,6 +524,7 @@ class GroupReport:
     budget: float
     usage: Usage = field(default_factory=Usage)
     models: dict[str, Usage] = field(default_factory=dict)
+    search_count: int = 0
 
     @property
     def spent(self) -> float:
@@ -546,6 +555,10 @@ class Report:
         return self.budget_mode == "shared"
 
     @property
+    def scope_mode(self) -> bool:
+        return self.budget_mode == "session_type"
+
+    @property
     def total_spent(self) -> float:
         return sum(group.spent for group in self.groups)
 
@@ -574,6 +587,14 @@ class Report:
             return self.shared_over
         return any(group.over_budget for group in self.groups)
 
+    def group(self, key_id: str | None) -> GroupReport | None:
+        if not key_id:
+            return None
+        for group in self.groups:
+            if group.key_id == key_id:
+                return group
+        return None
+
     def blockers(self, key_id: str | None = None) -> list[GroupReport]:
         if self.shared:
             if not self.shared_over:
@@ -581,6 +602,11 @@ class Report:
             # A shared budget covers every chat key, so any chat request is
             # blocked once the combined spend reaches the limit.
             return [group for group in self.groups if group.kind == "chat"]
+        if self.scope_mode:
+            group = self.group(key_id)
+            if group is not None:
+                return [group] if group.over_budget else []
+            return [group for group in self.groups if group.over_budget]
         result = []
         for group in self.groups:
             if group.kind != "chat" or not group.over_budget:
@@ -590,9 +616,14 @@ class Report:
             result.append(group)
         return result
 
-    def websearch_over_budget(self) -> bool:
+    def websearch_over_budget(self, scope_key: str | None = None) -> bool:
         if self.shared:
             return self.shared_over
+        if self.scope_mode:
+            group = self.group(scope_key)
+            if group is not None:
+                return group.over_budget
+            return any(group.over_budget for group in self.groups)
         group = self.websearch_group()
         return bool(group and group.over_budget)
 
@@ -692,6 +723,70 @@ def compute_report(
     return report
 
 
+def compute_session_report(
+    rows: list[dict[str, Any]],
+    search_counts: dict[str, int],
+    *,
+    pricing: PriceTable,
+    tz: Any,
+    peak_config: PeakConfig,
+    group_budget: float,
+    private_budget: float,
+    websearch_price_per_1000: float,
+    date_label: str,
+) -> Report:
+    """Build a report with one shared group bucket and one private bucket."""
+    report = Report(
+        date_label=date_label,
+        budget_mode="session_type",
+        websearch_count=sum(int(value or 0) for value in search_counts.values()),
+    )
+    buckets = {
+        "group": GroupReport(
+            key_id="scope:group",
+            label="群聊总额度",
+            kind="group",
+            budget=max(group_budget, 0.0),
+        ),
+        "private": GroupReport(
+            key_id="scope:private",
+            label="私聊总额度",
+            kind="private",
+            budget=max(private_budget, 0.0),
+        ),
+    }
+
+    for row in rows:
+        scope = scope_from_umo(row.get("umo"))
+        bucket = buckets.get(scope, buckets["group"])
+        model = str(row.get("provider_model") or "未知模型")
+        price_pair, exact = lookup_price(pricing, model)
+        peak = peak_config.is_peak(_row_local_datetime(row, tz))
+        price = price_pair["peak"] if peak else price_pair["off_peak"]
+        usage = _usage_from_row(row)
+        usage.cost = (
+            usage.cached_input * price.cached_input
+            + usage.input_other * price.input_miss
+            + usage.output * price.output
+        ) / 1_000_000
+        usage.peak_cost = usage.cost if peak else 0.0
+        usage.unknown_price = not exact
+        bucket.usage.add(usage)
+        model_usage = bucket.models.setdefault(model, Usage())
+        model_usage.add(usage)
+
+    for scope, count in search_counts.items():
+        bucket = buckets.get(str(scope))
+        if bucket is None or count <= 0:
+            continue
+        cost = count * websearch_price_per_1000 / 1000.0 if websearch_price_per_1000 > 0 else 0.0
+        bucket.usage.add(Usage(cost=cost))
+        bucket.search_count += int(count)
+
+    report.groups = [buckets["group"], buckets["private"]]
+    return report
+
+
 # ---------------------------------------------------------------------------
 # formatting
 # ---------------------------------------------------------------------------
@@ -713,8 +808,16 @@ def fmt_tokens(value: int) -> str:
     return str(value)
 
 
+_GROUP_ICONS = {
+    "chat": "🔑",
+    "websearch": "🔎",
+    "group": "👥",
+    "private": "💬",
+}
+
+
 def _group_header(group: GroupReport, shared: bool = False) -> str:
-    icon = "🔑" if group.kind == "chat" else "🔎"
+    icon = _GROUP_ICONS.get(group.kind, "•")
     if shared:
         budget_text = fmt_money(group.spent)
     elif group.budget > 0:
@@ -764,6 +867,8 @@ def format_today(report: Report, reset_hour: int = 0) -> str:
                 f" · 输出 {fmt_tokens(usage.output)}"
                 f" · 调用 {usage.count} 次"
             )
+        if group.kind in {"group", "private"} and group.search_count:
+            lines.append(f"   搜索调用：{group.search_count} 次")
         if group.usage.unknown_price:
             lines.append("   ⚠️ 该模型未配置价格，按默认价估算")
 
@@ -782,6 +887,8 @@ def format_detail(report: Report) -> str:
     lines = [f"📊 今日 API 明细 · {report.date_label}"]
     if report.shared:
         lines.append("（聊天 + 联网搜索共用额度）")
+    elif report.scope_mode:
+        lines.append("（群聊 / 私聊分开计算）")
     if not report.groups:
         lines.append("今天还没有产生 API 调用。")
         return "\n".join(lines)
@@ -790,8 +897,6 @@ def format_detail(report: Report) -> str:
         lines.append(_group_header(group, report.shared))
         if group.kind == "websearch":
             lines.append(f"   搜索调用：{group.usage.count} 次")
-            continue
-        if not group.models:
             continue
         for model, usage in sorted(
             group.models.items(), key=lambda item: item[1].cost, reverse=True
@@ -807,6 +912,8 @@ def format_detail(report: Report) -> str:
                 f"（高峰 {fmt_money(peak_cost)} / "
                 f"空闲 {fmt_money(off_peak_cost)}）"
             )
+        if group.kind in {"group", "private"} and group.search_count:
+            lines.append(f"   搜索调用：{group.search_count} 次")
     return "\n".join(lines)
 
 

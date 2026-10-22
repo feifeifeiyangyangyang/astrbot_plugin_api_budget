@@ -26,6 +26,7 @@ try:  # relative import when loaded as a package by AstrBot
         aggregate_by_day,
         build_key_map,
         compute_report,
+        compute_session_report,
         find_usage_database,
         fmt_money,
         format_detail,
@@ -51,6 +52,7 @@ except ImportError:  # direct import, e.g. unit tests
         aggregate_by_day,
         build_key_map,
         compute_report,
+        compute_session_report,
         find_usage_database,
         fmt_money,
         format_detail,
@@ -181,13 +183,19 @@ class ApiBudgetPlugin(Star):
             if isinstance(data, dict):
                 data.setdefault("version", STATE_VERSION)
                 data.setdefault("websearch", {})
+                data.setdefault("websearch_scope", {})
                 data.setdefault("notice", {})
                 return data
         except FileNotFoundError:
             pass
         except Exception as exc:  # corrupted file should never crash the bot
             logger.warning("读取额度插件状态失败：%s", exc)
-        return {"version": STATE_VERSION, "websearch": {}, "notice": {}}
+        return {
+            "version": STATE_VERSION,
+            "websearch": {},
+            "websearch_scope": {},
+            "notice": {},
+        }
 
     def _save_state(self) -> None:
         try:
@@ -202,6 +210,7 @@ class ApiBudgetPlugin(Star):
             self.logger.warning("保存额度插件状态失败：%s", exc)
 
     def _websearch_count(self, day_key: str, provider: str) -> int:
+        """Legacy global counter (kept for state migration)."""
         if not provider:
             return 0
         try:
@@ -210,11 +219,31 @@ class ApiBudgetPlugin(Star):
         except (AttributeError, TypeError, ValueError):
             return 0
 
-    async def _increment_websearch(self, provider: str, day_key: str) -> None:
+    def _websearch_scope_counts(self, day_key: str, provider: str) -> dict[str, int]:
+        result = {"group": 0, "private": 0}
+        if not provider:
+            return result
+        try:
+            day_counter = self._state.get("websearch_scope", {}).get(day_key, {})
+            provider_counter = (
+                day_counter.get(provider, {}) if isinstance(day_counter, dict) else {}
+            )
+            if isinstance(provider_counter, dict):
+                for scope in result:
+                    result[scope] = int(provider_counter.get(scope, 0) or 0)
+        except (AttributeError, TypeError, ValueError):
+            pass
+        # Old versions only stored a global count. Attribute it to group chats
+        # so existing data is not silently dropped.
+        result["group"] += self._websearch_count(day_key, provider)
+        return result
+
+    async def _increment_websearch(self, provider: str, day_key: str, scope: str) -> None:
         async with self._state_lock:
-            counters = self._state.setdefault("websearch", {})
+            counters = self._state.setdefault("websearch_scope", {})
             day_counter = counters.setdefault(day_key, {})
-            day_counter[provider] = int(day_counter.get(provider, 0) or 0) + 1
+            provider_counter = day_counter.setdefault(provider, {"group": 0, "private": 0})
+            provider_counter[scope] = int(provider_counter.get(scope, 0) or 0) + 1
             self._trim_state(day_key)
             self._save_state()
 
@@ -223,13 +252,14 @@ class ApiBudgetPlugin(Star):
             keep_after = date.fromisoformat(day_key) - timedelta(days=13)
         except ValueError:
             return
-        counters = self._state.get("websearch", {})
-        for key in list(counters):
-            try:
-                if date.fromisoformat(key) < keep_after:
+        for state_key in ("websearch", "websearch_scope"):
+            counters = self._state.get(state_key, {})
+            for key in list(counters):
+                try:
+                    if date.fromisoformat(key) < keep_after:
+                        counters.pop(key, None)
+                except ValueError:
                     counters.pop(key, None)
-            except ValueError:
-                counters.pop(key, None)
         notices = self._state.get("notice", {})
         cutoff = time.time() - 30 * 86400
         for key in list(notices):
@@ -238,6 +268,16 @@ class ApiBudgetPlugin(Star):
                     notices.pop(key, None)
             except (TypeError, ValueError):
                 notices.pop(key, None)
+
+    def _is_unlimited_user(self, event: AstrMessageEvent) -> bool:
+        configured = self._setting("unlimited_user_ids", [])
+        if isinstance(configured, str):
+            ids = [item.strip() for item in configured.split(",") if item.strip()]
+        elif isinstance(configured, (list, tuple, set)):
+            ids = [str(item).strip() for item in configured if str(item).strip()]
+        else:
+            ids = []
+        return bool(ids) and str(event.get_sender_id()) in ids
 
     async def _allow_notice(self, key: str, cooldown_seconds: int) -> bool:
         async with self._state_lock:
@@ -272,16 +312,24 @@ class ApiBudgetPlugin(Star):
             self._setting("holidays", []),
         )
 
-    def _budget_settings(self) -> tuple[float, dict[str, float], str]:
+    def _budget_settings(self) -> tuple[str, float, float, float, dict[str, float]]:
         try:
-            default_budget = float(self._setting("daily_budget", 2.0))
+            default_budget = float(self._setting("daily_budget", 1.0))
         except (TypeError, ValueError):
-            default_budget = 2.0
+            default_budget = 1.0
+        try:
+            group_budget = float(self._setting("group_daily_budget", default_budget))
+        except (TypeError, ValueError):
+            group_budget = default_budget
+        try:
+            private_budget = float(self._setting("private_daily_budget", default_budget))
+        except (TypeError, ValueError):
+            private_budget = default_budget
+        scope = str(self._setting("budget_scope", "session_type") or "session_type").strip().lower()
+        if scope not in {"session_type", "all", "real_key"}:
+            scope = "session_type"
         overrides = parse_budget_overrides(self._setting("budget_overrides", "{}"))
-        budget_mode = str(self._setting("budget_mode", "shared") or "shared").strip().lower()
-        if budget_mode not in {"shared", "per_key"}:
-            budget_mode = "shared"
-        return default_budget, overrides, budget_mode
+        return scope, default_budget, group_budget, private_budget, overrides
 
     async def _build_report(self) -> Report:
         tz = self._timezone()
@@ -299,15 +347,35 @@ class ApiBudgetPlugin(Star):
         except UsageDataUnavailable as exc:
             return Report(date_label=date_label, available=False, error=str(exc))
 
-        main_config = self._main_config()
-        chat_map, websearch_ref = build_key_map(main_config, self._websearch_provider() or None)
         provider = self._websearch_provider()
-        websearch_count = self._websearch_count(day_key, provider) if websearch_ref else 0
-        default_budget, overrides, budget_mode = self._budget_settings()
+        scope_setting, daily_budget, group_budget, private_budget, overrides = (
+            self._budget_settings()
+        )
         try:
             websearch_price = float(self._setting("websearch_price_per_1000", 0.0))
         except (TypeError, ValueError):
             websearch_price = 0.0
+
+        if scope_setting == "session_type":
+            search_counts = self._websearch_scope_counts(day_key, provider) if provider else {}
+            return compute_session_report(
+                rows,
+                search_counts,
+                pricing=self._pricing(),
+                tz=tz,
+                peak_config=self._peak_config(),
+                group_budget=group_budget,
+                private_budget=private_budget,
+                websearch_price_per_1000=websearch_price,
+                date_label=date_label,
+            )
+
+        main_config = self._main_config()
+        chat_map, websearch_ref = build_key_map(main_config, provider or None)
+        websearch_count = (
+            sum(self._websearch_scope_counts(day_key, provider).values()) if provider else 0
+        )
+        budget_mode = "shared" if scope_setting == "all" else "per_key"
         return compute_report(
             rows,
             chat_map,
@@ -316,7 +384,7 @@ class ApiBudgetPlugin(Star):
             pricing=self._pricing(),
             tz=tz,
             peak_config=self._peak_config(),
-            default_budget=default_budget,
+            default_budget=daily_budget,
             overrides=overrides,
             websearch_price_per_1000=websearch_price,
             date_label=date_label,
@@ -346,14 +414,9 @@ class ApiBudgetPlugin(Star):
         except (TypeError, ValueError):
             search_price = 0.0
         if provider and search_price > 0:
-            counters = self._state.get("websearch", {})
             for offset in range(days):
                 day = today - timedelta(days=offset)
-                count = 0
-                if isinstance(counters, dict):
-                    day_counter = counters.get(day.isoformat(), {})
-                    if isinstance(day_counter, dict):
-                        count = int(day_counter.get(provider, 0) or 0)
+                count = sum(self._websearch_scope_counts(day.isoformat(), provider).values())
                 if count:
                     bucket = day_costs.setdefault(day, DayCost(day=day))
                     bucket.cost += count * search_price / 1000.0
@@ -446,9 +509,11 @@ class ApiBudgetPlugin(Star):
 
     @filter.on_llm_request()
     async def guard_llm_request(self, event: AstrMessageEvent, req) -> None:
-        """Block the request when the key used by this session is over budget."""
+        """Block the request when the relevant budget bucket is exhausted."""
         try:
             if not bool(self._setting("enabled", True)):
+                return
+            if self._is_unlimited_user(event):
                 return
             enforce_chat = bool(self._setting("enforce_chat", True))
             enforce_websearch = bool(self._setting("enforce_websearch", True))
@@ -456,6 +521,24 @@ class ApiBudgetPlugin(Star):
                 return
             report = await self._build_report()
             if not report.available:
+                return
+            if report.scope_mode:
+                scope = "private" if event.is_private_chat() else "group"
+                scope_key = f"scope:{scope}"
+                if enforce_chat:
+                    bucket = report.group(scope_key)
+                    if bucket is not None and bucket.over_budget:
+                        text = self._render_block_message(report, bucket)
+                        await event.send(event.plain_result(text))
+                        event.stop_event()
+                        return
+                if enforce_websearch and report.websearch_over_budget(scope_key):
+                    removed = self._disable_websearch_tools(req)
+                    if removed and bool(self._setting("websearch_notice", True)):
+                        if await self._allow_notice(f"websearch:{event.unified_msg_origin}", 3600):
+                            await event.send(
+                                event.plain_result("🔎 联网搜索额度已用完，本轮已自动关闭搜索。")
+                            )
                 return
             if enforce_chat:
                 provider_key = await self._current_provider_key(event)
@@ -503,7 +586,8 @@ class ApiBudgetPlugin(Star):
             if not provider:
                 return
             _start, _end, day_key = self._day_start()
-            await self._increment_websearch(provider, day_key)
+            scope = "private" if event.is_private_chat() else "group"
+            await self._increment_websearch(provider, day_key, scope)
         except Exception:
             self.logger.warning("统计联网搜索调用失败", exc_info=True)
 
