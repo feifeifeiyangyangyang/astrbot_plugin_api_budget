@@ -277,33 +277,6 @@ class ComputeReportTest(unittest.TestCase):
         self.assertIn("群聊总额度", text)
         self.assertIn("私聊总额度", text)
 
-    def test_total_cap_blocks_both(self):
-        pricing = budget.normalize_pricing(budget.DEFAULT_PRICING_JSON)
-        peak = budget.parse_peak_config(["09:00-12:00"], [1, 2, 3, 4, 5], [])
-        off_ts = datetime(2026, 10, 22, 20, 0, tzinfo=CN).timestamp()
-        rows = [
-            _row(other=1_000_000, end_ts=off_ts, umo="g:GroupMessage:1"),
-            _row(other=1_000_000, end_ts=off_ts, umo="u:FriendMessage:1"),
-        ]
-        report = budget.compute_session_report(
-            rows,
-            {"group": 0, "private": 0},
-            pricing=pricing,
-            tz=CN,
-            peak_config=peak,
-            group_budget=10.0,
-            private_budget=10.0,
-            websearch_price_per_1000=0.0,
-            date_label="2026-10-22",
-            total_budget=1.5,
-        )
-        self.assertTrue(report.total_cap_over)
-        blockers = report.blockers("scope:private")
-        self.assertEqual(len(blockers), 1)
-        self.assertEqual(blockers[0].label, "总每日额度")
-        text = budget.format_today(report)
-        self.assertIn("总上限", text)
-
     def test_unknown_provider_is_still_reported(self):
         pricing = budget.normalize_pricing(budget.DEFAULT_PRICING_JSON)
         report = budget.compute_report(

@@ -549,7 +549,6 @@ class Report:
     budget_mode: str = "per_key"
     shared_budget: float = 0.0
     shared_spent: float = 0.0
-    total_cap: float = 0.0
 
     @property
     def shared(self) -> bool:
@@ -567,8 +566,6 @@ class Report:
     def total_budget(self) -> float:
         if self.shared:
             return self.shared_budget
-        if self.scope_mode and self.total_cap > 0:
-            return self.total_cap
         return sum(group.budget for group in self.groups if group.budget > 0)
 
     @property
@@ -582,18 +579,12 @@ class Report:
         return self.shared and self.shared_budget > 0 and self.shared_spent >= self.shared_budget
 
     @property
-    def total_cap_over(self) -> bool:
-        return self.scope_mode and self.total_cap > 0 and self.total_spent >= self.total_cap
-
-    @property
     def has_unknown_price(self) -> bool:
         return any(group.usage.unknown_price for group in self.groups)
 
     def is_over_budget(self) -> bool:
         if self.shared:
             return self.shared_over
-        if self.scope_mode:
-            return self.total_cap_over or any(group.over_budget for group in self.groups)
         return any(group.over_budget for group in self.groups)
 
     def group(self, key_id: str | None) -> GroupReport | None:
@@ -604,17 +595,6 @@ class Report:
                 return group
         return None
 
-    def total_blocker(self) -> GroupReport | None:
-        if not self.total_cap_over:
-            return None
-        return GroupReport(
-            key_id="scope:total",
-            label="总每日额度",
-            kind="total",
-            budget=self.total_cap,
-            usage=Usage(cost=self.total_spent),
-        )
-
     def blockers(self, key_id: str | None = None) -> list[GroupReport]:
         if self.shared:
             if not self.shared_over:
@@ -623,9 +603,6 @@ class Report:
             # blocked once the combined spend reaches the limit.
             return [group for group in self.groups if group.kind == "chat"]
         if self.scope_mode:
-            total = self.total_blocker()
-            if total is not None:
-                return [total]
             group = self.group(key_id)
             if group is not None:
                 return [group] if group.over_budget else []
@@ -643,8 +620,6 @@ class Report:
         if self.shared:
             return self.shared_over
         if self.scope_mode:
-            if self.total_cap_over:
-                return True
             group = self.group(scope_key)
             if group is not None:
                 return group.over_budget
@@ -759,14 +734,12 @@ def compute_session_report(
     private_budget: float,
     websearch_price_per_1000: float,
     date_label: str,
-    total_budget: float = 0.0,
 ) -> Report:
     """Build a report with one shared group bucket and one private bucket."""
     report = Report(
         date_label=date_label,
         budget_mode="session_type",
         websearch_count=sum(int(value or 0) for value in search_counts.values()),
-        total_cap=max(total_budget, 0.0),
     )
     buckets = {
         "group": GroupReport(
@@ -876,13 +849,14 @@ def format_today(report: Report, reset_hour: int = 0) -> str:
         else:
             lines.append(f"总计：{fmt_money(report.total_spent)}（共用额度，未设预算）")
     elif report.scope_mode:
-        if report.total_cap > 0:
-            lines.append(
-                f"总计：{fmt_money(report.total_spent)} / {fmt_money(report.total_cap)}（总上限）"
-            )
-            lines.append(f"（群聊 + 私聊合计，剩余 {fmt_money(max(report.total_remaining, 0.0))}）")
-        else:
-            lines.append(f"总计：{fmt_money(report.total_spent)}（未设总上限）")
+        group_bucket = report.group("scope:group")
+        private_bucket = report.group("scope:private")
+        group_spent = group_bucket.spent if group_bucket else 0.0
+        private_spent = private_bucket.spent if private_bucket else 0.0
+        lines.append(
+            f"总计：{fmt_money(report.total_spent)}"
+            f"（群聊 {fmt_money(group_spent)} + 私聊 {fmt_money(private_spent)}）"
+        )
     else:
         lines.append(f"总计：{fmt_money(report.total_spent)}")
     lines.append("")

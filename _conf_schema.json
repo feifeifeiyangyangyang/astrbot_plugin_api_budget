@@ -5,20 +5,14 @@
     "default": true,
     "hint": "关闭后不再拦截请求，也不再统计搜索调用。"
   },
-  "daily_budget": {
-    "description": "总每日额度（可选，元）",
-    "type": "float",
-    "default": 0.0,
-    "hint": "群聊 + 私聊合计不能超过这个值；0 表示不限制总上限，只按下面的「群聊每日额度」「私聊每日额度」分别限制。"
-  },
   "group_daily_budget": {
-    "description": "群聊每日额度（元）",
+    "description": "群聊每天最多花（元）",
     "type": "float",
     "default": 1.0,
     "hint": "所有群聊合计的每日额度；0 表示不限量。"
   },
   "private_daily_budget": {
-    "description": "私聊每日额度（元）",
+    "description": "私聊每天最多花（元）",
     "type": "float",
     "default": 1.0,
     "hint": "所有私聊合计的每日额度；0 表示不限量。"

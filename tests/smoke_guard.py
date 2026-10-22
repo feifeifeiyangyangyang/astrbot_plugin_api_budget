@@ -40,7 +40,6 @@ async def test_chat_block(main_module) -> None:
     plugin = make_plugin(
         main_module,
         db_path,
-        daily_budget=0.0,
         group_daily_budget=0.01,
         private_daily_budget=0.01,
     )
@@ -102,7 +101,6 @@ async def test_websearch_block(main_module) -> None:
     plugin = make_plugin(
         main_module,
         db_path,
-        daily_budget=0.0,
         group_daily_budget=2.0,
         private_daily_budget=2.0,
         websearch_price_per_1000=5000.0,
@@ -132,25 +130,6 @@ async def test_websearch_block(main_module) -> None:
     print("WEBSEARCH BLOCK OK")
 
 
-async def test_total_cap_blocks(main_module) -> None:
-    db_path = create_usage_db(EXPENSIVE_TOKENS)
-    plugin = make_plugin(
-        main_module,
-        db_path,
-        daily_budget=0.01,
-        group_daily_budget=10.0,
-        private_daily_budget=10.0,
-    )
-    event = FakeEvent()
-    request = FakeRequest()
-    await plugin.guard_llm_request(event, request)
-    print("total cap sent:", event.sent, "stopped:", event.stopped)
-    assert event.stopped, "optional total cap should block chat when exceeded"
-    assert event.sent
-    assert "总每日额度" in str(event.sent[0])
-    print("TOTAL CAP BLOCK OK")
-
-
 async def test_no_block_when_affordable(main_module) -> None:
     db_path = create_usage_db(EXPENSIVE_TOKENS)
     plugin = make_plugin(
@@ -175,7 +154,6 @@ async def run() -> None:
     await test_private_and_group_are_separate(main_module)
     await test_unlimited_user_bypasses_budget(main_module)
     await test_websearch_block(main_module)
-    await test_total_cap_blocks(main_module)
     await test_no_block_when_affordable(main_module)
     print("GUARD INTEGRATION OK")
 

@@ -306,16 +306,8 @@ class ApiBudgetPlugin(Star):
             self._setting("holidays", []),
         )
 
-    def _budget_settings(self) -> tuple[float, float, float]:
-        """Return (total_cap, group_budget, private_budget) in CNY.
-
-        ``0`` means unlimited for each value.  The total cap is optional and
-        applies to group + private combined.
-        """
-        try:
-            total_cap = float(self._setting("daily_budget", 0.0))
-        except (TypeError, ValueError):
-            total_cap = 0.0
+    def _budget_settings(self) -> tuple[float, float]:
+        """Return (group_budget, private_budget) in CNY; 0 means unlimited."""
         try:
             group_budget = float(self._setting("group_daily_budget", 1.0))
         except (TypeError, ValueError):
@@ -324,7 +316,7 @@ class ApiBudgetPlugin(Star):
             private_budget = float(self._setting("private_daily_budget", 1.0))
         except (TypeError, ValueError):
             private_budget = 1.0
-        return total_cap, group_budget, private_budget
+        return group_budget, private_budget
 
     async def _build_report(self) -> Report:
         tz = self._timezone()
@@ -343,7 +335,7 @@ class ApiBudgetPlugin(Star):
             return Report(date_label=date_label, available=False, error=str(exc))
 
         provider = self._websearch_provider()
-        total_cap, group_budget, private_budget = self._budget_settings()
+        group_budget, private_budget = self._budget_settings()
         try:
             websearch_price = float(self._setting("websearch_price_per_1000", 0.0))
         except (TypeError, ValueError):
@@ -360,7 +352,6 @@ class ApiBudgetPlugin(Star):
             private_budget=private_budget,
             websearch_price_per_1000=websearch_price,
             date_label=date_label,
-            total_budget=total_cap,
         )
 
     async def _build_history(self, days: int):
