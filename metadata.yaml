@@ -7,8 +7,8 @@ desc: >-
   管理员可在聊天中发送 /额度、/额度明细、/额度历史 查看花费。
 help: 管理员发送 /额度 查看今日总花费；/额度明细 看模型明细；/额度历史 7 查看最近 7 天。
 version: 1.5.0
-author: API Budget Contributors
-repo: https://github.com/your-name/astrbot_plugin_api_budget
+author: feifeifeiyangyangyang
+repo: https://github.com/feifeifeiyangyangyang/astrbot_plugin_api_budget
 astrbot_version: ">=4.23,<5"
 support_platforms:
   - aiocqhttp
