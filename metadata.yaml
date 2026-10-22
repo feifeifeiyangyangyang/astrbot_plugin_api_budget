@@ -1,0 +1,28 @@
+name: astrbot_plugin_api_budget
+display_name: API 额度管家
+short_desc: 按 API Key 限制每天 AI 花费，并支持在 QQ 内查询额度
+desc: >-
+  统计 AstrBot 每次对话的 token 花费（区分缓存命中与高峰/空闲价），
+  按 API Key 设置每日人民币预算；超限自动拦截并提示，
+  管理员可在聊天中发送 /额度、/额度明细、/额度历史 查看花费。
+help: 管理员发送 /额度 查看今日花费；/额度明细 看模型明细；/额度历史 7 查看最近 7 天。
+version: 1.0.0
+author: API Budget Contributors
+repo: https://github.com/your-name/astrbot_plugin_api_budget
+astrbot_version: ">=4.23,<5"
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - qq_official_webhook
+  - telegram
+  - discord
+  - lark
+  - dingtalk
+  - wecom
+  - slack
+  - kook
+tags:
+  - 额度
+  - 预算
+  - token
+  - 花费

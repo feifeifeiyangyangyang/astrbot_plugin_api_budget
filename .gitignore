@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Plugin runtime data (lives in AstrBot's data dir, never in the repo)
+data/
+state.json
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

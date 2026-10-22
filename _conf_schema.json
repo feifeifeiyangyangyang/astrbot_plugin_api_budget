@@ -1,0 +1,120 @@
+{
+  "enabled": {
+    "description": "启用插件",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后不再拦截请求，也不再统计搜索调用。"
+  },
+  "daily_budget": {
+    "description": "每个 API Key 每日预算（人民币元）",
+    "type": "float",
+    "default": 2.0,
+    "hint": "0 表示不限制、只统计。可用下方「单独预算」覆盖某个 Key。"
+  },
+  "budget_overrides": {
+    "description": "单独设置某个 Key 的预算（JSON）",
+    "type": "text",
+    "default": "{}",
+    "hint": "键可以用 provider source id；联网搜索用 websearch:<provider>。例如 {\"deepseek\": 5, \"websearch:deepseek\": 1}"
+  },
+  "enforce_chat": {
+    "description": "聊天 Key 超预算时拦截回答",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后只统计、不拦截。"
+  },
+  "enforce_websearch": {
+    "description": "联网搜索 Key 超预算时关闭搜索工具",
+    "type": "bool",
+    "default": true
+  },
+  "websearch_notice": {
+    "description": "关闭搜索时在会话里提示",
+    "type": "bool",
+    "default": true
+  },
+  "remove_all_search_tools": {
+    "description": "关闭搜索时移除所有内置搜索工具",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后只移除「额外搜索工具名」里列出的工具。"
+  },
+  "block_message": {
+    "description": "超限提示文案",
+    "type": "text",
+    "default": "🐟 今日 API 额度已用完啦（{key}：{spent} / {budget}），明天再来找我玩吧～",
+    "hint": "可用占位符：{key} {budget} {spent} {remaining} {date} {total_spent} {total_budget}"
+  },
+  "pricing_json": {
+    "description": "模型价格表（JSON，元/百万 token）",
+    "type": "text",
+    "default": "{\n  \"deepseek-flash\": {\n    \"peak\": {\n      \"cached_input\": 0.04,\n      \"input\": 2.0,\n      \"output\": 8.0\n    },\n    \"off_peak\": {\n      \"cached_input\": 0.02,\n      \"input\": 1.0,\n      \"output\": 4.0\n    }\n  },\n  \"deepseek-v4-pro\": {\n    \"peak\": {\n      \"cached_input\": 0.3,\n      \"input\": 9.0,\n      \"output\": 27.0\n    },\n    \"off_peak\": {\n      \"cached_input\": 0.15,\n      \"input\": 4.5,\n      \"output\": 13.5\n    }\n  },\n  \"default\": {\n    \"peak\": {\n      \"cached_input\": 0.04,\n      \"input\": 2.0,\n      \"output\": 8.0\n    },\n    \"off_peak\": {\n      \"cached_input\": 0.02,\n      \"input\": 1.0,\n      \"output\": 4.0\n    }\n  }\n}",
+    "hint": "缓存命中/未命中输入和输出分开配置；peak 为高峰价、off_peak 为空闲价。未知模型使用 default。"
+  },
+  "peak_windows": {
+    "description": "高峰时段",
+    "type": "list",
+    "default": [
+      "09:00-12:00",
+      "14:00-18:00"
+    ],
+    "hint": "格式 HH:MM-HH:MM；DeepSeek 高峰为工作日 9-12、14-18 点。"
+  },
+  "peak_weekdays": {
+    "description": "高峰星期",
+    "type": "list",
+    "default": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "hint": "1=周一 … 7=周日。"
+  },
+  "holidays": {
+    "description": "节假日日期（按空闲价计费）",
+    "type": "list",
+    "default": [],
+    "hint": "格式 YYYY-MM-DD，例如 [\"2026-10-01\"]。"
+  },
+  "websearch_price_per_1000": {
+    "description": "联网搜索价格（元/1000 次成功请求）",
+    "type": "float",
+    "default": 0.0,
+    "hint": "DeepSeek Search 2026-11-01 起为 5 元/1000 次，此前免费；其他提供商按实际填写。"
+  },
+  "count_failed_searches": {
+    "description": "失败的搜索调用也计数",
+    "type": "bool",
+    "default": false
+  },
+  "websearch_tool_names": {
+    "description": "额外搜索工具名",
+    "type": "list",
+    "default": [],
+    "hint": "一般不用填，内置已包含 AstrBot 的搜索工具。"
+  },
+  "reset_hour": {
+    "description": "每天几点重置额度",
+    "type": "int",
+    "default": 0,
+    "hint": "0-23，默认 0 点。"
+  },
+  "history_days": {
+    "description": "「额度历史」默认显示天数",
+    "type": "int",
+    "default": 7
+  },
+  "timezone": {
+    "description": "时区",
+    "type": "string",
+    "default": "Asia/Shanghai"
+  },
+  "db_path": {
+    "description": "AstrBot 数据库路径（留空自动查找）",
+    "type": "string",
+    "default": "",
+    "hint": "一般是 .../data/data_v4.db，无需填写。"
+  }
+}
