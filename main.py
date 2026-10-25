@@ -11,6 +11,7 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, StarTools
 
 try:  # relative import when loaded as a package by AstrBot
@@ -25,6 +26,7 @@ try:  # relative import when loaded as a package by AstrBot
         UsageDataUnavailable,
         aggregate_by_day,
         compute_session_report,
+        estimate_cost,
         find_usage_database,
         fmt_money,
         format_detail,
@@ -35,6 +37,7 @@ try:  # relative import when loaded as a package by AstrBot
         parse_peak_config,
         query_usage,
         resolve_timezone,
+        scope_from_umo,
     )
 except ImportError:  # direct import, e.g. unit tests
     from budget import (  # type: ignore[no-redef]
@@ -48,6 +51,7 @@ except ImportError:  # direct import, e.g. unit tests
         UsageDataUnavailable,
         aggregate_by_day,
         compute_session_report,
+        estimate_cost,
         find_usage_database,
         fmt_money,
         format_detail,
@@ -58,11 +62,14 @@ except ImportError:  # direct import, e.g. unit tests
         parse_peak_config,
         query_usage,
         resolve_timezone,
+        scope_from_umo,
     )
 
 PLUGIN_NAME = "astrbot_plugin_api_budget"
 STATE_VERSION = 1
 DEFAULT_BLOCK_MESSAGE = "🐟 今日 API 额度已用完啦（{key}：{spent} / {budget}），明天再来找我玩吧～"
+DEFAULT_PEAK_BLOCK_MESSAGE = "⏰ 现在是 API 高峰期，先省点额度，等空闲时段再来找我吧～"
+DEFAULT_MAX_OVER_BUDGET_NOTICES = 3
 DEFAULT_HISTORY_DAYS = 7
 MAX_HISTORY_DAYS = 30
 
@@ -179,6 +186,8 @@ class ApiBudgetPlugin(Star):
                 data.setdefault("websearch", {})
                 data.setdefault("websearch_scope", {})
                 data.setdefault("notice", {})
+                data.setdefault("budget_notices", {})
+                data.setdefault("excluded_billing", {})
                 return data
         except FileNotFoundError:
             pass
@@ -189,6 +198,8 @@ class ApiBudgetPlugin(Star):
             "websearch": {},
             "websearch_scope": {},
             "notice": {},
+            "budget_notices": {},
+            "excluded_billing": {},
         }
 
     def _save_state(self) -> None:
@@ -246,7 +257,12 @@ class ApiBudgetPlugin(Star):
             keep_after = date.fromisoformat(day_key) - timedelta(days=13)
         except ValueError:
             return
-        for state_key in ("websearch", "websearch_scope"):
+        for state_key in (
+            "websearch",
+            "websearch_scope",
+            "budget_notices",
+            "excluded_billing",
+        ):
             counters = self._state.get(state_key, {})
             for key in list(counters):
                 try:
@@ -263,15 +279,121 @@ class ApiBudgetPlugin(Star):
             except (TypeError, ValueError):
                 notices.pop(key, None)
 
-    def _is_unlimited_user(self, event: AstrMessageEvent) -> bool:
+    def _unlimited_ids(self) -> set[str]:
         configured = self._setting("unlimited_user_ids", [])
         if isinstance(configured, str):
-            ids = [item.strip() for item in configured.split(",") if item.strip()]
+            values = [item.strip() for item in configured.split(",") if item.strip()]
         elif isinstance(configured, (list, tuple, set)):
-            ids = [str(item).strip() for item in configured if str(item).strip()]
+            values = [str(item).strip() for item in configured if str(item).strip()]
         else:
-            ids = []
-        return bool(ids) and str(event.get_sender_id()) in ids
+            values = []
+        return {value.upper() for value in values}
+
+    def _exclude_whitelist_billing(self) -> bool:
+        return bool(self._setting("exclude_whitelist_billing", True))
+
+    def _event_sender_candidates(self, event: AstrMessageEvent) -> set[str]:
+        candidates: set[str] = set()
+        try:
+            candidates.add(str(event.get_sender_id()))
+        except Exception:
+            pass
+        try:
+            sender = getattr(getattr(event, "message_obj", None), "sender", None)
+            user_id = getattr(sender, "user_id", None)
+            if user_id:
+                candidates.add(str(user_id))
+        except Exception:
+            pass
+        try:
+            if event.is_private_chat():
+                umo = str(event.unified_msg_origin or "")
+                candidates.add(umo.rsplit(":", 1)[-1])
+        except Exception:
+            pass
+        return {value.strip().upper() for value in candidates if value and value.strip()}
+
+    def _is_unlimited_user(self, event: AstrMessageEvent) -> bool:
+        ids = self._unlimited_ids()
+        return bool(ids) and bool(ids & self._event_sender_candidates(event))
+
+    def _umo_sender_id(self, umo: str | None) -> str:
+        return str(umo or "").rsplit(":", 1)[-1].strip().upper()
+
+    def _filter_whitelisted_private_rows(self, rows: list[dict]) -> list[dict]:
+        """Private chat rows carry the user id in umo, so they can be excluded exactly."""
+        if not self._exclude_whitelist_billing():
+            return rows
+        ids = self._unlimited_ids()
+        if not ids:
+            return rows
+        return [
+            row
+            for row in rows
+            if not (
+                scope_from_umo(str(row.get("umo") or "")) == "private"
+                and self._umo_sender_id(row.get("umo")) in ids
+            )
+        ]
+
+    async def _add_excluded_billing(self, day_key: str, scope: str, cost: float) -> None:
+        if cost <= 0:
+            return
+        async with self._state_lock:
+            days = self._state.setdefault("excluded_billing", {})
+            day = days.setdefault(day_key, {})
+            day[scope] = float(day.get(scope, 0) or 0) + float(cost)
+            self._trim_state(day_key)
+            self._save_state()
+
+    def _excluded_billing_for(self, day_key: str) -> dict[str, float]:
+        days = self._state.get("excluded_billing", {})
+        day = days.get(day_key, {}) if isinstance(days, dict) else {}
+        result: dict[str, float] = {}
+        if isinstance(day, dict):
+            for scope in ("group", "private"):
+                try:
+                    result[scope] = max(float(day.get(scope, 0) or 0), 0.0)
+                except (TypeError, ValueError):
+                    result[scope] = 0.0
+        return result
+
+    def _apply_excluded_billing(self, report: Report, day_key: str) -> None:
+        excluded = self._excluded_billing_for(day_key)
+        if not any(excluded.values()):
+            return
+        for group in report.groups:
+            scope = "private" if group.kind == "private" else "group"
+            amount = min(excluded.get(scope, 0.0), group.usage.cost)
+            if amount > 0:
+                group.usage.cost = max(group.usage.cost - amount, 0.0)
+
+    async def _claim_budget_notice(
+        self,
+        event: AstrMessageEvent,
+        day_key: str,
+        prefix: str = "budget",
+    ) -> bool:
+        """Return True when a block notice is still allowed today."""
+        try:
+            max_notices = int(
+                self._setting("max_over_budget_notices", DEFAULT_MAX_OVER_BUDGET_NOTICES)
+            )
+        except (TypeError, ValueError):
+            max_notices = DEFAULT_MAX_OVER_BUDGET_NOTICES
+        if max_notices <= 0:
+            return True
+        key = f"{prefix}:{event.unified_msg_origin or event.get_sender_id() or 'unknown'}"
+        async with self._state_lock:
+            days = self._state.setdefault("budget_notices", {})
+            day = days.setdefault(day_key, {})
+            count = int(day.get(key, 0) or 0)
+            if count >= max_notices:
+                return False
+            day[key] = count + 1
+            self._trim_state(day_key)
+            self._save_state()
+            return True
 
     async def _allow_notice(self, key: str, cooldown_seconds: int) -> bool:
         async with self._state_lock:
@@ -328,6 +450,7 @@ class ApiBudgetPlugin(Star):
             rows = await asyncio.to_thread(query_usage, db_path, start, end)
         except UsageDataUnavailable as exc:
             return Report(date_label=date_label, available=False, error=str(exc))
+        rows = self._filter_whitelisted_private_rows(rows)
 
         provider = self._websearch_provider()
         total_budget = self._budget_settings()
@@ -337,7 +460,7 @@ class ApiBudgetPlugin(Star):
             websearch_price = 0.0
 
         search_counts = self._websearch_scope_counts(day_key, provider) if provider else {}
-        return compute_session_report(
+        report = compute_session_report(
             rows,
             search_counts,
             pricing=self._pricing(),
@@ -349,6 +472,8 @@ class ApiBudgetPlugin(Star):
             date_label=date_label,
             total_budget=total_budget,
         )
+        self._apply_excluded_billing(report, day_key)
+        return report
 
     async def _build_history(self, days: int):
         tz = self._timezone()
@@ -433,13 +558,39 @@ class ApiBudgetPlugin(Star):
         return removed
 
     @filter.on_llm_request()
-    async def guard_llm_request(self, event: AstrMessageEvent, req) -> None:
+    async def guard_llm_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
         """Block the request when the relevant budget bucket is exhausted."""
         try:
             if not bool(self._setting("enabled", True)):
                 return
+
+            # Whitelisted users bypass every block.  Their group usage is
+            # recorded by on_llm_response and subtracted from the report.
             if self._is_unlimited_user(event):
+                if self._exclude_whitelist_billing():
+                    event.set_extra("_api_budget_whitelisted", True)
+                    event.set_extra(
+                        "_api_budget_model",
+                        str(getattr(req, "model", "") or ""),
+                    )
                 return
+
+            # Optional hard stop during peak-price hours.
+            if bool(self._setting("peak_block_enabled", False)):
+                tz = self._timezone()
+                if self._peak_config().is_peak(datetime.now(tz)):
+                    text = (
+                        str(
+                            self._setting("peak_block_message", DEFAULT_PEAK_BLOCK_MESSAGE) or ""
+                        ).strip()
+                        or DEFAULT_PEAK_BLOCK_MESSAGE
+                    )
+                    _start, _end, day_key = self._day_start()
+                    if await self._claim_budget_notice(event, day_key, prefix="peak"):
+                        await event.send(event.plain_result(text))
+                    event.stop_event()
+                    return
+
             enforce_chat = bool(self._setting("enforce_chat", True))
             enforce_websearch = bool(self._setting("enforce_websearch", True))
             if not enforce_chat and not enforce_websearch:
@@ -452,8 +603,12 @@ class ApiBudgetPlugin(Star):
             if enforce_chat:
                 blockers = report.blockers(scope_key)
                 if blockers:
-                    text = self._render_block_message(report, blockers[0])
-                    await event.send(event.plain_result(text))
+                    _start, _end, day_key = self._day_start()
+                    # Usually only the first over-budget notice is useful;
+                    # cap it so auto-replies cannot spam the same chat.
+                    if await self._claim_budget_notice(event, day_key):
+                        text = self._render_block_message(report, blockers[0])
+                        await event.send(event.plain_result(text))
                     event.stop_event()
                     return
             if enforce_websearch and report.websearch_over_budget(scope_key):
@@ -475,6 +630,8 @@ class ApiBudgetPlugin(Star):
             name = str(getattr(tool, "name", "") or "")
             if name not in self._websearch_tool_names():
                 return
+            if self._exclude_whitelist_billing() and self._is_unlimited_user(event):
+                return
             if not bool(self._setting("count_failed_searches", False)):
                 if bool(getattr(tool_result, "isError", False)):
                     return
@@ -486,6 +643,44 @@ class ApiBudgetPlugin(Star):
             await self._increment_websearch(provider, day_key, scope)
         except Exception:
             self.logger.warning("统计联网搜索调用失败", exc_info=True)
+
+    @filter.on_llm_response()
+    async def track_whitelisted_usage(self, event: AstrMessageEvent, response: LLMResponse) -> None:
+        """Best-effort exclusion of whitelisted group usage from billing.
+
+        AstrBot only stores one aggregated token row per group, without the
+        sender id, so private chats are excluded by their umo in
+        :meth:`_build_report` and group chats are estimated here from each
+        completed LLM response.
+        """
+        try:
+            if not self._exclude_whitelist_billing():
+                return
+            if not event.get_extra("_api_budget_whitelisted"):
+                return
+            if event.is_private_chat():
+                return
+            if bool(getattr(response, "is_chunk", False)):
+                return
+            usage = getattr(response, "usage", None)
+            if usage is None:
+                return
+            model = str(event.get_extra("_api_budget_model") or "")
+            tz = self._timezone()
+            peak = self._peak_config().is_peak(datetime.now(tz))
+            cost = estimate_cost(
+                model,
+                int(getattr(usage, "input_other", 0) or 0),
+                int(getattr(usage, "input_cached", 0) or 0),
+                int(getattr(usage, "output", 0) or 0),
+                self._pricing(),
+                peak,
+            )
+            if cost > 0:
+                _start, _end, day_key = self._day_start()
+                await self._add_excluded_billing(day_key, "group", cost)
+        except Exception:
+            self.logger.warning("统计白名单用量失败", exc_info=True)
 
     # ------------------------------------------------------------------
     # commands

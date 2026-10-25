@@ -92,6 +92,64 @@ async def test_websearch_block(main_module) -> None:
     print("WEBSEARCH BLOCK OK")
 
 
+async def test_over_budget_notice_cap(main_module) -> None:
+    db_path = create_usage_db(EXPENSIVE_TOKENS)
+    plugin = make_plugin(
+        main_module,
+        db_path,
+        daily_budget=0.01,
+        max_over_budget_notices=2,
+    )
+    event = FakeEvent()
+    event.unified_msg_origin = "test:GroupMessage:notice-cap"
+    for _ in range(4):
+        event.stopped = False
+        await plugin.guard_llm_request(event, FakeRequest())
+        assert event.stopped
+    print("notice count:", len(event.sent))
+    assert len(event.sent) == 2, "only the configured number of notices is sent"
+    print("NOTICE CAP OK")
+
+
+async def test_peak_block(main_module) -> None:
+    db_path = create_usage_db(EXPENSIVE_TOKENS)
+    plugin = make_plugin(
+        main_module,
+        db_path,
+        daily_budget=100.0,
+        peak_block_enabled=True,
+        peak_windows=["00:00-23:59"],
+        peak_weekdays=[1, 2, 3, 4, 5, 6, 7],
+        holidays=[],
+    )
+    event = FakeEvent()
+    await plugin.guard_llm_request(event, FakeRequest())
+    print("peak sent:", event.sent, "stopped:", event.stopped)
+    assert event.stopped
+    assert event.sent and "高峰" in str(event.sent[0])
+    print("PEAK BLOCK OK")
+
+
+async def test_whitelist_private_rows_excluded(main_module) -> None:
+    db_path = create_usage_db(EXPENSIVE_TOKENS)
+    plugin = make_plugin(
+        main_module,
+        db_path,
+        unlimited_user_ids=["abc"],
+        exclude_whitelist_billing=True,
+    )
+    rows = [
+        {"umo": "p:FriendMessage:abc"},
+        {"umo": "p:FriendMessage:xyz"},
+        {"umo": "p:GroupMessage:g1"},
+    ]
+    kept = plugin._filter_whitelisted_private_rows(rows)
+    print("kept rows:", kept)
+    assert len(kept) == 2
+    assert all(row["umo"] != "p:FriendMessage:abc" for row in kept)
+    print("WHITELIST BILLING FILTER OK")
+
+
 async def test_no_block_when_affordable(main_module) -> None:
     db_path = create_usage_db(EXPENSIVE_TOKENS)
     plugin = make_plugin(main_module, db_path, daily_budget=100.0)
@@ -110,6 +168,9 @@ async def run() -> None:
     await test_chat_block(main_module)
     await test_unlimited_user_bypasses_budget(main_module)
     await test_websearch_block(main_module)
+    await test_over_budget_notice_cap(main_module)
+    await test_peak_block(main_module)
+    await test_whitelist_private_rows_excluded(main_module)
     await test_no_block_when_affordable(main_module)
     print("GUARD INTEGRATION OK")
 

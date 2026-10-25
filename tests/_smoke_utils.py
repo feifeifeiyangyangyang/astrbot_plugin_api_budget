@@ -174,6 +174,7 @@ class FakeToolSet:
 class FakeRequest:
     def __init__(self):
         self.func_tool = FakeToolSet()
+        self.model = "deepseek-flash"
 
 
 class FakeEvent:
@@ -185,12 +186,19 @@ class FakeEvent:
         self.message_str = "/额度"
         self.sent = []
         self.stopped = False
+        self.extras = {}
 
     def is_private_chat(self):
         return self.private
 
     def get_sender_id(self):
         return self.sender_id
+
+    def set_extra(self, key, value):
+        self.extras[key] = value
+
+    def get_extra(self, key, default=None):
+        return self.extras.get(key, default)
 
     def plain_result(self, text):
         return text

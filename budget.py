@@ -263,6 +263,28 @@ def lookup_price(table: PriceTable, model: str | None) -> tuple[dict[str, Price]
     return table.get("default", {"peak": Price(), "off_peak": Price()}), False
 
 
+def estimate_cost(
+    model: str | None,
+    input_other: int,
+    cached_input: int,
+    output: int,
+    pricing: PriceTable,
+    peak: bool,
+) -> float:
+    """Estimate CNY cost for a single LLM response's token usage."""
+    price_pair, _exact = lookup_price(pricing, model)
+    price = price_pair["peak"] if peak else price_pair["off_peak"]
+    return (
+        max(
+            0.0,
+            input_other * price.input_miss
+            + cached_input * price.cached_input
+            + output * price.output,
+        )
+        / 1_000_000
+    )
+
+
 # ---------------------------------------------------------------------------
 # usage database
 # ---------------------------------------------------------------------------

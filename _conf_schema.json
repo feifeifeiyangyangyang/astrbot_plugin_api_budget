@@ -17,6 +17,18 @@
     "default": [],
     "hint": "列表中的用户不受额度限制。aiocqhttp（NapCat）填 QQ 号；QQ 官方机器人填 AstrBot 用户 ID（可用 /sid 查看）。"
   },
+  "exclude_whitelist_billing": {
+    "description": "白名单用户不计费",
+    "type": "bool",
+    "default": true,
+    "hint": "私聊精确排除；群聊按每次白名单请求的 token 估算扣除。"
+  },
+  "max_over_budget_notices": {
+    "description": "超额提醒最大次数",
+    "type": "int",
+    "default": 3,
+    "hint": "每个会话每天最多发几次超额提醒；超过后只拦截、不再发言；0 = 不限制。"
+  },
   "enforce_chat": {
     "description": "额度用完时拦截 LLM 回答",
     "type": "bool",
@@ -71,6 +83,17 @@
       5
     ],
     "hint": "1=周一 … 7=周日。"
+  },
+  "peak_block_enabled": {
+    "description": "高峰期禁止 AI 发言",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，在「高峰时段 + 高峰星期」内直接拦截 AI 回答（管理员指令仍可用）。"
+  },
+  "peak_block_message": {
+    "description": "高峰期提示文案",
+    "type": "text",
+    "default": "⏰ 现在是 API 高峰期，先省点额度，等空闲时段再来找我吧～"
   },
   "holidays": {
     "description": "节假日日期（按空闲价计费）",

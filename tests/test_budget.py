@@ -127,6 +127,15 @@ class PricingTest(unittest.TestCase):
         self.assertEqual(price_pair["peak"], table["default"]["peak"])
 
 
+class EstimateCostTest(unittest.TestCase):
+    def test_peak_and_off_peak(self):
+        table = budget.normalize_pricing(budget.DEFAULT_PRICING_JSON)
+        peak = budget.estimate_cost("deepseek-flash", 1_000_000, 0, 1_000_000, table, True)
+        off = budget.estimate_cost("deepseek-flash", 1_000_000, 0, 1_000_000, table, False)
+        self.assertAlmostEqual(peak, 10.0, places=6)
+        self.assertAlmostEqual(off, 5.0, places=6)
+
+
 class DayRangeTest(unittest.TestCase):
     def test_midnight_reset(self):
         start, end = budget.local_day_range(datetime(2026, 10, 22, 15, 0, tzinfo=CN), CN, 0)

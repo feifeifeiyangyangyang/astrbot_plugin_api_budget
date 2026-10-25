@@ -3,10 +3,11 @@ display_name: API 额度管家
 short_desc: 统计群聊/私聊每天 AI 花费并限制每日总额度
 desc: >-
   统计 AstrBot 每次对话的 token 花费（区分缓存命中与高峰/空闲价），
-  设置一个每日总额度（群聊 + 私聊合计）；超限自动拦截并提示，
+  设置一个每日总额度（群聊 + 私聊合计）；支持白名单绕过与不计费、
+  高峰时段禁言、超额提醒次数上限；超限自动拦截并提示，
   管理员可在聊天中发送 /额度、/额度明细、/额度历史 查看花费。
 help: 管理员发送 /额度 查看今日总花费；/额度明细 看模型明细；/额度历史 7 查看最近 7 天。
-version: 1.5.0
+version: 1.6.0
 author: feifeifeiyangyangyang
 repo: https://github.com/feifeifeiyangyangyang/astrbot_plugin_api_budget
 astrbot_version: ">=4.23,<5"
