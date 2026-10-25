@@ -83,9 +83,9 @@ async def test_websearch_block(main_module) -> None:
     event = FakeEvent()
     request = FakeRequest()
     await plugin.guard_llm_request(event, request)
-    print("search removal sent:", event.sent, "stopped:", event.stopped)
+    print("search removed, sent:", event.sent, "stopped:", event.stopped)
     assert not event.stopped, "chat should continue when enforce_chat is off"
-    assert event.sent, "search notice should be sent"
+    assert not event.sent, "search tools are removed silently"
     assert "web_search_deepseek" not in request.func_tool.tools
     assert "deepseek_fetch_web_page" not in request.func_tool.tools
     assert "unrelated_tool" in request.func_tool.tools

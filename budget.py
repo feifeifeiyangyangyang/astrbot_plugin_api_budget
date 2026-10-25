@@ -572,6 +572,7 @@ class Report:
     shared_budget: float = 0.0
     shared_spent: float = 0.0
     total_cap: float = 0.0
+    excluded_spent: float = 0.0
 
     @property
     def shared(self) -> bool:
@@ -896,6 +897,8 @@ def format_today(report: Report, reset_hour: int = 0) -> str:
             lines.append(f"总计：{fmt_money(report.total_spent)} / {fmt_money(report.total_cap)}")
         else:
             lines.append(f"总计：{fmt_money(report.total_spent)}")
+        if report.excluded_spent > 0:
+            lines.append(f"🙈 白名单用户花费：{fmt_money(report.excluded_spent)}（不计入额度）")
         lines.append("")
         lines.append(f"👥 群聊：{fmt_money(group_spent)}")
         lines.append(f"💬 私聊：{fmt_money(private_spent)}")
@@ -965,6 +968,8 @@ def format_detail(report: Report) -> str:
         lines.append("（聊天 + 联网搜索共用额度）")
     elif report.scope_mode:
         lines.append("（群聊 / 私聊分开计算）")
+    if report.excluded_spent > 0:
+        lines.append(f"🙈 白名单用户花费：{fmt_money(report.excluded_spent)}（不计入额度）")
     if not report.groups:
         lines.append("今天还没有产生 API 调用。")
         return "\n".join(lines)

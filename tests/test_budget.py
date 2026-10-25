@@ -399,6 +399,16 @@ class FormatTest(unittest.TestCase):
         self.assertIn("10-22", text)
         self.assertIn("¥0.50", text)
 
+    def test_format_today_shows_whitelist_spend(self):
+        report = budget.Report(
+            date_label="2026-10-22",
+            budget_mode="session_type",
+            total_cap=1.0,
+            excluded_spent=0.1,
+        )
+        text = budget.format_today(report)
+        self.assertIn("白名单用户花费：¥0.10", text)
+
 
 if __name__ == "__main__":
     unittest.main()

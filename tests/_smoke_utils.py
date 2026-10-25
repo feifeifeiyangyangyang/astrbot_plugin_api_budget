@@ -124,9 +124,7 @@ def plugin_config(db_path: Path, **overrides) -> dict:
         "db_path": str(db_path),
         "timezone": "Asia/Shanghai",
         "enforce_chat": True,
-        "enforce_websearch": True,
-        "websearch_notice": True,
-        "remove_all_search_tools": True,
+        "max_over_budget_notices": 3,
         "pricing_json": "",
     }
     config.update(overrides)

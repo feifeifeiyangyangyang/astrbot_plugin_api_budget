@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -175,7 +174,7 @@ class ApiBudgetPlugin(Star):
         return names
 
     # ------------------------------------------------------------------
-    # small persistent state (websearch counters + notice cooldowns)
+    # small persistent state (websearch counters + block notices)
     # ------------------------------------------------------------------
 
     def _load_state(self) -> dict:
@@ -185,7 +184,6 @@ class ApiBudgetPlugin(Star):
                 data.setdefault("version", STATE_VERSION)
                 data.setdefault("websearch", {})
                 data.setdefault("websearch_scope", {})
-                data.setdefault("notice", {})
                 data.setdefault("budget_notices", {})
                 data.setdefault("excluded_billing", {})
                 return data
@@ -197,7 +195,6 @@ class ApiBudgetPlugin(Star):
             "version": STATE_VERSION,
             "websearch": {},
             "websearch_scope": {},
-            "notice": {},
             "budget_notices": {},
             "excluded_billing": {},
         }
@@ -270,14 +267,6 @@ class ApiBudgetPlugin(Star):
                         counters.pop(key, None)
                 except ValueError:
                     counters.pop(key, None)
-        notices = self._state.get("notice", {})
-        cutoff = time.time() - 30 * 86400
-        for key in list(notices):
-            try:
-                if float(notices[key]) < cutoff:
-                    notices.pop(key, None)
-            except (TypeError, ValueError):
-                notices.pop(key, None)
 
     def _unlimited_ids(self) -> set[str]:
         configured = self._setting("unlimited_user_ids", [])
@@ -395,20 +384,6 @@ class ApiBudgetPlugin(Star):
             self._save_state()
             return True
 
-    async def _allow_notice(self, key: str, cooldown_seconds: int) -> bool:
-        async with self._state_lock:
-            notices = self._state.setdefault("notice", {})
-            now = time.time()
-            try:
-                last = float(notices.get(key, 0) or 0)
-            except (TypeError, ValueError):
-                last = 0.0
-            if now - last < cooldown_seconds:
-                return False
-            notices[key] = now
-            self._save_state()
-            return True
-
     # ------------------------------------------------------------------
     # reporting
     # ------------------------------------------------------------------
@@ -450,7 +425,7 @@ class ApiBudgetPlugin(Star):
             rows = await asyncio.to_thread(query_usage, db_path, start, end)
         except UsageDataUnavailable as exc:
             return Report(date_label=date_label, available=False, error=str(exc))
-        rows = self._filter_whitelisted_private_rows(rows)
+        filtered_rows = self._filter_whitelisted_private_rows(rows)
 
         provider = self._websearch_provider()
         total_budget = self._budget_settings()
@@ -460,7 +435,7 @@ class ApiBudgetPlugin(Star):
             websearch_price = 0.0
 
         search_counts = self._websearch_scope_counts(day_key, provider) if provider else {}
-        report = compute_session_report(
+        raw_report = compute_session_report(
             rows,
             search_counts,
             pricing=self._pricing(),
@@ -472,7 +447,20 @@ class ApiBudgetPlugin(Star):
             date_label=date_label,
             total_budget=total_budget,
         )
+        report = compute_session_report(
+            filtered_rows,
+            search_counts,
+            pricing=self._pricing(),
+            tz=tz,
+            peak_config=self._peak_config(),
+            group_budget=0.0,
+            private_budget=0.0,
+            websearch_price_per_1000=websearch_price,
+            date_label=date_label,
+            total_budget=total_budget,
+        )
         self._apply_excluded_billing(report, day_key)
+        report.excluded_spent = max(raw_report.total_spent - report.total_spent, 0.0)
         return report
 
     async def _build_history(self, days: int):
@@ -534,19 +522,18 @@ class ApiBudgetPlugin(Star):
         if toolset is None:
             return []
         names = set(self._websearch_tool_names())
-        if self._setting("remove_all_search_tools", True):
-            try:
-                for name in toolset.names():
-                    lowered = str(name).lower()
-                    if (
-                        lowered.startswith("web_search_")
-                        or "fetch_web_page" in lowered
-                        or lowered.endswith("_web_search")
-                        or lowered == "exa_get_contents"
-                    ):
-                        names.add(str(name))
-            except Exception:
-                pass
+        try:
+            for name in toolset.names():
+                lowered = str(name).lower()
+                if (
+                    lowered.startswith("web_search_")
+                    or "fetch_web_page" in lowered
+                    or lowered.endswith("_web_search")
+                    or lowered == "exa_get_contents"
+                ):
+                    names.add(str(name))
+        except Exception:
+            pass
         removed: list[str] = []
         for name in names:
             try:
@@ -592,9 +579,6 @@ class ApiBudgetPlugin(Star):
                     return
 
             enforce_chat = bool(self._setting("enforce_chat", True))
-            enforce_websearch = bool(self._setting("enforce_websearch", True))
-            if not enforce_chat and not enforce_websearch:
-                return
             report = await self._build_report()
             if not report.available:
                 return
@@ -611,13 +595,9 @@ class ApiBudgetPlugin(Star):
                         await event.send(event.plain_result(text))
                     event.stop_event()
                     return
-            if enforce_websearch and report.websearch_over_budget(scope_key):
-                removed = self._disable_websearch_tools(req)
-                if removed and bool(self._setting("websearch_notice", True)):
-                    if await self._allow_notice(f"websearch:{event.unified_msg_origin}", 3600):
-                        await event.send(
-                            event.plain_result("🔎 联网搜索额度已用完，本轮已自动关闭搜索。")
-                        )
+            # Quota exhausted: non-whitelisted chats lose search tools.
+            if report.is_over_budget():
+                self._disable_websearch_tools(req)
         except Exception:
             self.logger.warning("额度拦截检查失败（已跳过，不影响正常对话）", exc_info=True)
 

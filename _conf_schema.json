@@ -35,22 +35,6 @@
     "default": true,
     "hint": "关闭后只统计、不拦截。"
   },
-  "enforce_websearch": {
-    "description": "搜索额度用完时移除搜索工具",
-    "type": "bool",
-    "default": true
-  },
-  "websearch_notice": {
-    "description": "关闭搜索时在会话里提示",
-    "type": "bool",
-    "default": true
-  },
-  "remove_all_search_tools": {
-    "description": "关闭搜索时移除所有内置搜索工具",
-    "type": "bool",
-    "default": true,
-    "hint": "关闭后只移除「额外搜索工具名」里列出的工具。"
-  },
   "block_message": {
     "description": "超限提示文案",
     "type": "text",
